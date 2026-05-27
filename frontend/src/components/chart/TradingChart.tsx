@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import {
   createChart,
   IChartApi,
@@ -9,16 +9,24 @@ import {
   ColorType,
   PriceScaleMode,
 } from 'lightweight-charts';
-import type { OHLCV, QuantilePrediction } from '@/types/trading';
+import type { OHLCV, QuantilePrediction, AISignal } from '@/types/trading';
+
+export interface TradingChartHandle {
+  getNowX: (timestamp: number) => number | null;
+}
 
 interface Props {
   history: OHLCV[];
   currentCandle: OHLCV | null;
   predictions: QuantilePrediction[];
+  signal?: AISignal;
   symbol: string;
 }
 
-export default function TradingChart({ history, currentCandle, predictions, symbol }: Props) {
+const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart(
+  { history, currentCandle, predictions, signal, symbol },
+  ref
+) {
   const containerRef  = useRef<HTMLDivElement>(null);
   const chartRef      = useRef<IChartApi | null>(null);
   const candleRef     = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -27,15 +35,21 @@ export default function TradingChart({ history, currentCandle, predictions, symb
   const upperLineRef  = useRef<ISeriesApi<'Line'> | null>(null);
   const medianLineRef = useRef<ISeriesApi<'Line'> | null>(null);
   const lowerLineRef  = useRef<ISeriesApi<'Line'> | null>(null);
+  const priceLinesRef = useRef<any[]>([]);
 
   const initDoneRef      = useRef(false);
   const scrolledRef      = useRef(false);
   const lastSymbolRef    = useRef<string>('');
   const lastPredTimesRef = useRef<string>('');
-
-  // Saved logical range — restored after every prediction setData() so
-  // future-timestamped series never shift the visible viewport.
   const lockedRangeRef   = useRef<{ from: number; to: number } | null>(null);
+
+  useImperativeHandle(ref, () => ({
+    getNowX: (timestamp: number) => {
+      if (!chartRef.current) return null;
+      const x = chartRef.current.timeScale().timeToCoordinate(timestamp as any);
+      return x ?? null;
+    },
+  }));
 
   // ── Build chart once ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -92,7 +106,6 @@ export default function TradingChart({ history, currentCandle, predictions, symb
     });
     chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.88, bottom: 0 } });
 
-    // Forecast area fill
     upperAreaRef.current = chart.addAreaSeries({
       topColor:    '#00E6FF1A',
       bottomColor: '#00E6FF05',
@@ -103,7 +116,6 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       crosshairMarkerVisible: false,
     });
 
-    // Upper τ0.90 dashed cyan
     upperLineRef.current = chart.addLineSeries({
       color: '#00E6FF', lineWidth: 2, lineStyle: LineStyle.Dashed,
       title: '↑ 90%',
@@ -111,7 +123,6 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       crosshairMarkerRadius: 4,
     });
 
-    // Median τ0.50 solid gold
     medianLineRef.current = chart.addLineSeries({
       color: '#FFB800', lineWidth: 3, lineStyle: LineStyle.Solid,
       title: '● 50%',
@@ -120,7 +131,6 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       crosshairMarkerBackgroundColor: '#FFB80099',
     });
 
-    // Lower τ0.10 dashed red
     lowerLineRef.current = chart.addLineSeries({
       color: '#FF433D', lineWidth: 2, lineStyle: LineStyle.Dashed,
       title: '↓ 10%',
@@ -128,7 +138,6 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       crosshairMarkerRadius: 4,
     });
 
-    // Debounced resize — only fires when size actually changes
     let rafId = 0;
     let lastW = 0, lastH = 0;
     const ro = new ResizeObserver(() => {
@@ -148,17 +157,18 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       cancelAnimationFrame(rafId);
       ro.disconnect();
       chart.remove();
-      initDoneRef.current    = false;
-      scrolledRef.current    = false;
-      lastSymbolRef.current  = '';
+      initDoneRef.current      = false;
+      scrolledRef.current      = false;
+      lastSymbolRef.current    = '';
       lastPredTimesRef.current = '';
-      lockedRangeRef.current = null;
-      candleRef.current      = null;
-      volumeRef.current      = null;
-      upperAreaRef.current   = null;
-      upperLineRef.current   = null;
-      medianLineRef.current  = null;
-      lowerLineRef.current   = null;
+      lockedRangeRef.current   = null;
+      priceLinesRef.current    = [];
+      candleRef.current        = null;
+      volumeRef.current        = null;
+      upperAreaRef.current     = null;
+      upperLineRef.current     = null;
+      medianLineRef.current    = null;
+      lowerLineRef.current     = null;
     };
   }, []);
 
@@ -166,20 +176,19 @@ export default function TradingChart({ history, currentCandle, predictions, symb
   useEffect(() => {
     if (!candleRef.current) return;
 
-    // On symbol change: wipe everything and reset all position refs
     if (symbol !== lastSymbolRef.current) {
       lastSymbolRef.current    = symbol;
       scrolledRef.current      = false;
       lastPredTimesRef.current = '';
       lockedRangeRef.current   = null;
+      priceLinesRef.current.forEach(pl => { try { candleRef.current?.removePriceLine(pl); } catch {} });
+      priceLinesRef.current = [];
       candleRef.current.setData([]);
       volumeRef.current?.setData([]);
       upperAreaRef.current?.setData([]);
       upperLineRef.current?.setData([]);
       medianLineRef.current?.setData([]);
       lowerLineRef.current?.setData([]);
-      // Re-enable autoScale for the new symbol so incoming history fits correctly;
-      // it will be locked again after scrollToRealTime settles below.
       chartRef.current?.priceScale('right').applyOptions({ autoScale: true });
     }
 
@@ -199,11 +208,6 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       chartRef.current?.timeScale().scrollToRealTime();
       scrolledRef.current = true;
 
-      // One frame after scrollToRealTime settles:
-      // 1. Lock the Y axis — price stays near base via backend mean-reversion,
-      //    so historical range always fits live candles. Prevents Y-axis jumping.
-      // 2. Save the logical range — restored after every prediction setData()
-      //    to prevent future timestamps from shifting the viewport rightward.
       requestAnimationFrame(() => {
         chartRef.current?.priceScale('right').applyOptions({ autoScale: false });
         const range = chartRef.current?.timeScale().getVisibleLogicalRange();
@@ -227,7 +231,6 @@ export default function TradingChart({ history, currentCandle, predictions, symb
   useEffect(() => {
     if (!upperLineRef.current || predictions.length === 0) return;
 
-    // Only redraw when the bar boundaries shift (typically once per hour)
     const fp = `${predictions[0]?.time}-${predictions[predictions.length - 1]?.time}`;
     if (fp === lastPredTimesRef.current) return;
     lastPredTimesRef.current = fp;
@@ -238,12 +241,48 @@ export default function TradingChart({ history, currentCandle, predictions, symb
     medianLineRef.current?.setData(sorted.map((p) => ({ time: p.time, value: p.median })) as any);
     lowerLineRef.current?.setData(sorted.map((p) => ({ time: p.time, value: p.lower })) as any);
 
-    // Restore the locked range immediately — setData() with future timestamps
-    // would otherwise push the viewport rightward into the forecast zone.
+    // Dot markers on each forecast path
+    upperLineRef.current.setMarkers(
+      sorted.map((p) => ({ time: p.time as any, position: 'inBar' as const, color: '#00E6FF', shape: 'circle' as const, size: 1 }))
+    );
+    medianLineRef.current?.setMarkers(
+      sorted.map((p) => ({ time: p.time as any, position: 'inBar' as const, color: '#FFFFFF', shape: 'circle' as const, size: 1 }))
+    );
+    lowerLineRef.current?.setMarkers(
+      sorted.map((p) => ({ time: p.time as any, position: 'inBar' as const, color: '#FF433D', shape: 'circle' as const, size: 1 }))
+    );
+
     if (lockedRangeRef.current) {
       chartRef.current?.timeScale().setVisibleLogicalRange(lockedRangeRef.current);
     }
   }, [predictions]);
 
+  // ── AI Signal price lines for Entry / SL / TP ────────────────────────────
+  useEffect(() => {
+    if (!candleRef.current || !signal) return;
+
+    priceLinesRef.current.forEach(pl => { try { candleRef.current?.removePriceLine(pl); } catch {} });
+    priceLinesRef.current = [];
+
+    const add = (price: number, color: string, title: string) => {
+      if (!candleRef.current) return;
+      const pl = candleRef.current.createPriceLine({
+        price, color, lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title,
+      });
+      priceLinesRef.current.push(pl);
+    };
+
+    const { entryZone, takeProfit1, takeProfit2, stopLoss } = signal;
+    add((entryZone[0] + entryZone[1]) / 2,   '#02C07688', 'Entry');
+    add((takeProfit1[0] + takeProfit1[1]) / 2, '#00E6FF88', 'TP1');
+    add((takeProfit2[0] + takeProfit2[1]) / 2, '#A855F788', 'TP2');
+    add((stopLoss[0] + stopLoss[1]) / 2,       '#FF433D88', 'SL');
+  }, [signal]);
+
   return <div ref={containerRef} className="w-full h-full" />;
-}
+});
+
+export default TradingChart;

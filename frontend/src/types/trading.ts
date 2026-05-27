@@ -49,6 +49,15 @@ export interface LearningLog {
   type: 'positive' | 'negative' | 'neutral';
 }
 
+export interface Metrics {
+  tick_count: number;
+  elapsed_secs: number;
+  rows_ingested: number;
+  perf_pct: number;
+  directional_accuracy: number;
+  last_retrain_secs_ago: number;
+}
+
 export interface WsMessage {
   type: 'HISTORY' | 'TICK' | 'SIGNAL' | 'REGIME';
   data?: OHLCV[];
@@ -56,6 +65,7 @@ export interface WsMessage {
   predictions?: QuantilePrediction[];
   signal?: AISignal;
   regime?: MarketRegime;
+  metrics?: Metrics;
 }
 
 export interface AssetConfig {

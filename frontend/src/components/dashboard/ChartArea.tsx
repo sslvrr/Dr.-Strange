@@ -1,18 +1,11 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Layers, Layout, RefreshCw } from 'lucide-react';
-import dynamic from 'next/dynamic';
-import type { OHLCV, QuantilePrediction, AssetConfig, MarketRegime } from '@/types/trading';
+import ForecastCanvas from '@/components/chart/ForecastCanvas';
+import TradingChart from '@/components/chart/TradingChart';
+import type { TradingChartHandle } from '@/components/chart/TradingChart';
+import type { OHLCV, QuantilePrediction, AssetConfig, MarketRegime, AISignal } from '@/types/trading';
 import { RSIPanel, MACDPanel } from '@/components/chart/IndicatorPanels';
-
-const TradingChart = dynamic(() => import('@/components/chart/TradingChart'), {
-  ssr: false,
-  loading: () => (
-    <div className="w-full h-full flex items-center justify-center text-[#848E9C] text-xs">
-      Loading chart engine...
-    </div>
-  ),
-});
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', 'D', 'W'];
 const RANGES     = ['1D', '5D', '1M', '3M', '6M', 'YTD', '1Y', '5Y', 'All'];
@@ -22,6 +15,7 @@ interface Props {
   history: OHLCV[];
   currentCandle: OHLCV | null;
   predictions: QuantilePrediction[];
+  signal?: AISignal;
   status: string;
   regime?: MarketRegime;
   priceChange?: number;
@@ -52,11 +46,12 @@ function LiveClock() {
 }
 
 export default function ChartArea({
-  config, history, currentCandle, predictions, status, regime,
+  config, history, currentCandle, predictions, signal, status, regime,
   priceChange = 0, priceChangePct = 0,
   timeframe, onTimeframeChange,
 }: Props) {
   const [showIndicators, setShowIndicators] = useState(false);
+  const chartHandleRef = useRef<TradingChartHandle | null>(null);
 
   const latest  = currentCandle ?? history[history.length - 1];
   const close   = latest?.close ?? config.basePrice;
@@ -68,6 +63,9 @@ export default function ChartArea({
   const isLive     = status === 'live';
   const statusColor = isLive ? '#02C076' : '#FF433D';
   const statusText  = isLive ? '● LIVE ENGINE CONNECTED' : `● ${status.toUpperCase()}`;
+
+  // Separator timestamp = current bar's open time
+  const separatorTime = currentCandle?.time ?? 0;
 
   // Derive bullish probability from the median forecast slope
   const bullPct = (() => {
@@ -81,7 +79,6 @@ export default function ChartArea({
 
       {/* ── Chart toolbar ── */}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#2B2F36] flex-shrink-0 bg-[#0D1117]">
-        {/* Symbol */}
         <div className="flex items-center gap-2 flex-shrink-0">
           <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-black"
             style={{ background: config.symbol.startsWith('BTC') ? '#F7931A' : config.symbol.startsWith('ETH') ? '#627EEA' : config.symbol.startsWith('SOL') ? '#9945FF' : '#02C076' }}>
@@ -91,7 +88,6 @@ export default function ChartArea({
           <span className="text-[10px] text-[#848E9C]">· {timeframe} · {config.exchange}</span>
         </div>
 
-        {/* OHLC */}
         <div className="hidden lg:flex items-center gap-2 text-[10px] font-mono ml-2">
           <span className="text-[#848E9C]">O<span className="text-[#EAECEF] ml-0.5">{fmt(open, config.symbol)}</span></span>
           <span className="text-[#848E9C]">H<span className="text-[#02C076] ml-0.5">{fmt(high, config.symbol)}</span></span>
@@ -120,7 +116,6 @@ export default function ChartArea({
 
         <div className="w-px h-4 bg-[#2B2F36] mx-1" />
 
-        {/* Tools */}
         <div className="flex gap-1">
           <button onClick={() => setShowIndicators(!showIndicators)}
             className="flex items-center gap-1 px-2 py-1 rounded text-[11px] text-[#848E9C] hover:text-[#EAECEF] hover:bg-[#1A2030] transition-colors">
@@ -135,7 +130,6 @@ export default function ChartArea({
         </div>
       </div>
 
-      {/* Indicators dropdown */}
       {showIndicators && (
         <div className="absolute z-20 mt-8 ml-2 bg-[#161B22] border border-[#2B2F36] rounded-lg p-3 shadow-2xl"
           style={{ top: 80 }}>
@@ -149,10 +143,10 @@ export default function ChartArea({
         </div>
       )}
 
-      {/* ── Chart canvas — fills ALL remaining height ── */}
+      {/* ── Chart canvas ── */}
       <div className="relative flex-1 min-h-0">
 
-        {/* AI Market Regime badge — live from backend */}
+        {/* AI Market Regime badge */}
         <div className="absolute top-2 left-2 z-10 rounded-lg px-2.5 py-2"
           style={{ background: '#0D1117EE', border: '1px solid #2B2F36', backdropFilter: 'blur(6px)' }}>
           <div className="flex items-center gap-1.5 mb-0.5">
@@ -166,16 +160,9 @@ export default function ChartArea({
           <div className="text-[9px] text-[#848E9C]">Confidence: {regime?.confidence ?? '--'}%</div>
         </div>
 
-        {/* Forecast labels — only when we have predictions */}
+        {/* Forecast scenario labels */}
         {predictions.length > 0 && (
           <>
-            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10">
-              <div className="text-[10px] font-semibold text-[#848E9C] px-3 py-1 rounded"
-                style={{ background: '#0D1117BB', border: '1px solid #2B2F3666' }}>
-                AI FORECAST (NEXT 24–48H)
-              </div>
-            </div>
-
             <div className="absolute top-2 right-2 z-10 text-right">
               <div className="text-[10px] font-bold text-[#02C076] px-2 py-1 rounded mb-1"
                 style={{ background: '#02C07611', border: '1px solid #02C07433' }}>
@@ -218,22 +205,28 @@ export default function ChartArea({
         )}
 
         {/* Connection status */}
-        <div className="absolute top-2 left-1/2 ml-20 z-10">
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10">
           <span className="text-[9px] font-mono px-2 py-0.5 rounded"
             style={{ color: statusColor, background: `${statusColor}11`, border: `1px solid ${statusColor}33` }}>
             {statusText}
           </span>
         </div>
 
+        {/* Forecast canvas overlay — separator line + historical/forecast labels */}
+        {separatorTime > 0 && (
+          <ForecastCanvas chartRef={chartHandleRef} separatorTime={separatorTime} />
+        )}
+
         <TradingChart
+          ref={chartHandleRef}
           history={history}
           currentCandle={currentCandle}
           predictions={predictions}
+          signal={signal}
           symbol={config.symbol}
         />
       </div>
 
-      {/* ── RSI and MACD: stable canvas panels, no chart jumping ── */}
       <RSIPanel  history={history} currentCandle={currentCandle} />
       <MACDPanel history={history} currentCandle={currentCandle} />
 

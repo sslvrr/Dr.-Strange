@@ -2,18 +2,23 @@
 import { useEffect, useRef, useState } from 'react';
 import ConfidenceGauge from '@/components/ui/ConfidenceGauge';
 import { useCountdown } from '@/hooks/useCountdown';
-import type { MarketRegime } from '@/types/trading';
-
-const LEARNING_LOG = [
-  { time: '12:20', event: 'Model retrained on new data', value: '+2.3%',           type: 'pos' },
-  { time: '11:45', event: 'Regime change detected',      value: 'Trend→Volatile',  type: 'warn' },
-  { time: '11:32', event: 'Added 3 new features',        value: '+1.1%',           type: 'pos' },
-  { time: '10:50', event: 'Reduced overfitting',         value: '+0.9%',           type: 'pos' },
-  { time: '09:15', event: 'Reinforcement reward',        value: 'Optimized',       type: 'pos' },
-];
+import type { MarketRegime, Metrics } from '@/types/trading';
 
 function logColor(type: string) {
   return type === 'pos' ? '#02C076' : type === 'warn' ? '#FFB800' : '#FF433D';
+}
+
+function fmtRows(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M rows`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K rows`;
+  return `${n} rows`;
+}
+
+function fmtRetrainAgo(secs: number) {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m ago`;
+  return `${m}m ago`;
 }
 
 /* ── Mini canvas sparkline ── */
@@ -81,25 +86,34 @@ function NeuralPanel({ confidence }: { confidence: number }) {
 }
 
 /* ── 2. Self-Learning Status ── */
-function SelfLearningPanel() {
-  const perfData = [62, 64, 61, 67, 70, 68, 74, 78, 76, 80];
+function SelfLearningPanel({ metrics }: { metrics?: Metrics }) {
+  // Keep a rolling sparkline of perf_pct values
+  const [sparkData, setSparkData] = useState<number[]>([62, 64, 61, 67, 70, 68, 74, 78, 76, 80]);
+  useEffect(() => {
+    if (metrics?.perf_pct != null) {
+      setSparkData(prev => [...prev.slice(-19), metrics.perf_pct]);
+    }
+  }, [metrics?.perf_pct]);
+
+  const rows: [string, string, string][] = [
+    ['Learning Mode',    'Reinforcement Learning',                          '#02C076'],
+    ['Market Adaptation','ACTIVE ✦',                                        '#00E6FF'],
+    ['New Data Ingested', metrics ? fmtRows(metrics.rows_ingested) : '—',   '#EAECEF'],
+    ['Last Retrain',      metrics ? fmtRetrainAgo(metrics.last_retrain_secs_ago) : '—', '#EAECEF'],
+    ['Performance ∆',     metrics ? `+${metrics.perf_pct}% (7d)` : '—',    '#02C076'],
+  ];
+
   return (
     <Panel title="Self-Learning Status">
       <div className="space-y-1">
-        {[
-          ['Learning Mode', 'Reinforcement Learning', '#02C076'],
-          ['Market Adaptation', 'ACTIVE ✦', '#00E6FF'],
-          ['New Data Ingested', '12.4M rows', '#EAECEF'],
-          ['Last Retrain', '2h 15m ago', '#EAECEF'],
-          ['Performance ∆', '+14.7% (7d)', '#02C076'],
-        ].map(([k, v, c]) => (
+        {rows.map(([k, v, c]) => (
           <div key={k} className="flex items-center justify-between">
             <span className="text-[9px] text-[#848E9C]">{k}</span>
             <span className="text-[9px] font-semibold" style={{ color: c }}>{v}</span>
           </div>
         ))}
       </div>
-      <Spark data={perfData} color="#02C076" height={28} />
+      <Spark data={sparkData} color="#02C076" height={28} />
     </Panel>
   );
 }
@@ -134,10 +148,13 @@ function AdaptationPanel({ regime }: { regime?: MarketRegime }) {
       <div>
         <div className="flex justify-between text-[9px] mb-0.5">
           <span className="text-[#848E9C]">Volatility Adaptation</span>
-          <span className="font-semibold text-[#FFB800]">High Volatility</span>
+          <span className="font-semibold text-[#FFB800]">
+            {regime?.label === 'HIGH VOLATILITY' ? 'High Volatility' : 'Normal'}
+          </span>
         </div>
         <div className="h-1 bg-[#0D1117] rounded-full">
-          <div className="h-full rounded-full" style={{ width: '71%', background: '#FFB800' }} />
+          <div className="h-full rounded-full"
+            style={{ width: regime?.label === 'HIGH VOLATILITY' ? '78%' : '42%', background: '#FFB800' }} />
         </div>
       </div>
     </Panel>
@@ -183,18 +200,21 @@ function ArchitecturePanel() {
 }
 
 /* ── 5. Forecast Quality ── */
-function QualityPanel({ confidence }: { confidence: number }) {
-  const metrics = [
-    { k: 'Directional Accuracy', v: '68.4%', pct: 68, c: '#02C076' },
-    { k: 'Forecast Efficiency',  v: '1.32',  pct: 66, c: '#00E6FF' },
-    { k: 'Calibration Score',    v: '0.71',  pct: 71, c: '#A855F7' },
-    { k: 'Sharpe (Strategy)',    v: '2.14',  pct: 85, c: '#FFB800' },
-    { k: 'Max Drawdown',         v: '-8.6%', pct: 14, c: '#FF433D' },
+function QualityPanel({ confidence, metrics }: { confidence: number; metrics?: Metrics }) {
+  const dirAcc = metrics?.directional_accuracy ?? 68.4;
+  const qualityMetrics = [
+    { k: 'Directional Accuracy', v: `${dirAcc.toFixed(1)}%`, pct: dirAcc, c: '#02C076' },
+    { k: 'Forecast Efficiency',  v: '1.32',                  pct: 66,     c: '#00E6FF' },
+    { k: 'Calibration Score',    v: '0.71',                  pct: 71,     c: '#A855F7' },
+    { k: 'Sharpe (Strategy)',    v: '2.14',                  pct: 85,     c: '#FFB800' },
+    { k: 'Max Drawdown',         v: '-8.6%',                 pct: 14,     c: '#FF433D' },
   ];
+  const overall = dirAcc >= 72 ? 'Excellent' : dirAcc >= 65 ? 'Good' : 'Fair';
+  const overallColor = dirAcc >= 72 ? '#02C076' : dirAcc >= 65 ? '#00E6FF' : '#FFB800';
   return (
     <Panel title="Forecast Quality">
       <div className="space-y-1.5">
-        {metrics.map(({ k, v, pct, c }) => (
+        {qualityMetrics.map(({ k, v, pct, c }) => (
           <div key={k}>
             <div className="flex justify-between text-[9px] mb-0.5">
               <span className="text-[#848E9C]">{k}</span>
@@ -209,7 +229,7 @@ function QualityPanel({ confidence }: { confidence: number }) {
       <div className="flex items-center justify-between mt-1">
         <div>
           <div className="text-[9px] text-[#848E9C]">Overall</div>
-          <div className="text-xs font-bold text-[#02C076]">Good</div>
+          <div className="text-xs font-bold" style={{ color: overallColor }}>{overall}</div>
         </div>
         <ConfidenceGauge value={confidence} size={46} strokeWidth={5} color="#02C076" />
       </div>
@@ -218,12 +238,35 @@ function QualityPanel({ confidence }: { confidence: number }) {
 }
 
 /* ── 6. Learning Log + Retrain ── */
-function LogPanel() {
+function LogPanel({ metrics }: { metrics?: Metrics }) {
   const { h, m, s } = useCountdown(4965);
+  const [log, setLog] = useState([
+    { time: '--:--', event: 'Model retrained on new data', value: '+2.3%',          type: 'pos' },
+    { time: '--:--', event: 'Regime change detected',      value: 'Trend→Volatile', type: 'warn' },
+    { time: '--:--', event: 'Added 3 new features',        value: '+1.1%',          type: 'pos' },
+    { time: '--:--', event: 'Reduced overfitting',         value: '+0.9%',          type: 'pos' },
+    { time: '--:--', event: 'Reinforcement reward',        value: 'Optimized',      type: 'pos' },
+  ]);
+
+  // Generate timestamps client-side only to avoid hydration mismatch
+  useEffect(() => {
+    const elapsed = metrics?.elapsed_secs ?? 0;
+    const fmt = (offset: number) =>
+      new Date(Date.now() - elapsed * 1000 - offset).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+    setLog([
+      { time: fmt(2_700_000),  event: 'Model retrained on new data', value: `+${metrics?.perf_pct?.toFixed(1) ?? '2.3'}%`, type: 'pos' },
+      { time: fmt(4_500_000),  event: 'Regime change detected',      value: 'Trend→Volatile',  type: 'warn' },
+      { time: fmt(5_280_000),  event: 'Added 3 new features',        value: '+1.1%',            type: 'pos' },
+      { time: fmt(7_800_000),  event: 'Reduced overfitting',         value: '+0.9%',            type: 'pos' },
+      { time: fmt(12_300_000), event: 'Reinforcement reward',        value: 'Optimized',        type: 'pos' },
+    ]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [metrics?.elapsed_secs]);
+
   return (
     <Panel title="Recent Learning Log">
       <div className="space-y-1 flex-1">
-        {LEARNING_LOG.map((l, i) => (
+        {log.map((l, i) => (
           <div key={i} className="flex items-center justify-between gap-2">
             <span className="text-[8px] font-mono text-[#5E6673] flex-shrink-0">{l.time}</span>
             <span className="text-[9px] text-[#848E9C] flex-1 truncate">{l.event}</span>
@@ -252,16 +295,24 @@ function LogPanel() {
 }
 
 /* ── Combined strip ── */
-export default function BottomPanels({ confidence, regime }: { confidence?: number; regime?: MarketRegime }) {
+export default function BottomPanels({
+  confidence,
+  regime,
+  metrics,
+}: {
+  confidence?: number;
+  regime?: MarketRegime;
+  metrics?: Metrics;
+}) {
   const conf = confidence ?? 72;
   return (
     <div className="grid grid-cols-6 gap-2 px-2 py-2" style={{ height: 196 }}>
       <NeuralPanel confidence={conf} />
-      <SelfLearningPanel />
+      <SelfLearningPanel metrics={metrics} />
       <AdaptationPanel regime={regime} />
       <ArchitecturePanel />
-      <QualityPanel confidence={conf} />
-      <LogPanel />
+      <QualityPanel confidence={conf} metrics={metrics} />
+      <LogPanel metrics={metrics} />
     </div>
   );
 }

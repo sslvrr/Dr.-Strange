@@ -6,9 +6,10 @@ import { TICKER_DATA } from '@/types/trading';
 interface TopNavProps {
   selectedSymbol: string;
   onSelectSymbol: (symbol: string) => void;
+  livePrices?: Record<string, number>;
 }
 
-export default function TopNav({ selectedSymbol, onSelectSymbol }: TopNavProps) {
+export default function TopNav({ selectedSymbol, onSelectSymbol, livePrices }: TopNavProps) {
   const [searchFocused, setSearchFocused] = useState(false);
 
   return (
@@ -73,8 +74,14 @@ export default function TopNav({ selectedSymbol, onSelectSymbol }: TopNavProps) 
       {/* Clickable asset ticker bar */}
       <div className="flex items-center h-9 border-t border-[#1E2329] overflow-x-auto">
         {TICKER_DATA.map((t) => {
-          const isActive = t.symbol === selectedSymbol;
-          const pos = t.changePct >= 0;
+          const isActive  = t.symbol === selectedSymbol;
+          const livePrice = livePrices?.[t.symbol];
+          const displayPrice = livePrice ?? t.price;
+          // Calculate change from static seed price when live
+          const change = livePrice != null ? livePrice - t.price : t.change;
+          const changePct = livePrice != null ? ((livePrice - t.price) / t.price) * 100 : t.changePct;
+          const pos = changePct >= 0;
+
           return (
             <button
               key={t.symbol}
@@ -89,13 +96,13 @@ export default function TopNav({ selectedSymbol, onSelectSymbol }: TopNavProps) 
                 {t.symbol}
               </span>
               <span className="text-[11px] font-mono text-[#EAECEF]">
-                {t.price >= 1000
-                  ? t.price.toLocaleString('en-US', { maximumFractionDigits: 1 })
-                  : t.price < 10 ? t.price.toFixed(5)
-                  : t.price.toFixed(2)}
+                {displayPrice >= 1000
+                  ? displayPrice.toLocaleString('en-US', { maximumFractionDigits: 1 })
+                  : displayPrice < 10 ? displayPrice.toFixed(5)
+                  : displayPrice.toFixed(2)}
               </span>
               <span className="text-[11px] font-mono font-semibold" style={{ color: pos ? '#02C076' : '#FF433D' }}>
-                {pos ? '+' : ''}{t.changePct.toFixed(2)}%
+                {pos ? '+' : ''}{changePct.toFixed(2)}%
               </span>
             </button>
           );

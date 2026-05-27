@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { OHLCV, QuantilePrediction, AISignal, MarketRegime, WsMessage } from '@/types/trading';
+import type { OHLCV, QuantilePrediction, AISignal, MarketRegime, Metrics, WsMessage } from '@/types/trading';
 
 export type ConnectionStatus = 'connecting' | 'live' | 'disconnected' | 'error';
 
@@ -10,6 +10,7 @@ interface StreamState {
   predictions: QuantilePrediction[];
   signal: AISignal | null;
   regime: MarketRegime | null;
+  metrics: Metrics | null;
   status: ConnectionStatus;
 }
 
@@ -29,6 +30,7 @@ export function useAssetStream(symbol: string) {
     predictions: [],
     signal: null,
     regime: null,
+    metrics: null,
     status: 'connecting',
   });
 
@@ -69,6 +71,7 @@ export function useAssetStream(symbol: string) {
             ...s,
             currentCandle: payload.candle ?? s.currentCandle,
             predictions: payload.predictions ?? s.predictions,
+            metrics: payload.metrics ?? s.metrics,
           }));
         } else if (payload.type === 'SIGNAL' && payload.signal) {
           setState((s) => ({ ...s, signal: payload.signal! }));
