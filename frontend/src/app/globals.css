@@ -1,0 +1,99 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #0B0E11;
+  --bg-secondary: #12161A;
+  --bg-panel: #161B22;
+  --bg-card: #0D1117;
+  --border-default: #2B2F36;
+  --brand-cyan: #00E6FF;
+  --brand-gold: #FFB800;
+  --brand-green: #02C076;
+  --brand-red: #FF433D;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  background: var(--bg-primary);
+  color: #EAECEF;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #12161A;
+}
+::-webkit-scrollbar-thumb {
+  background: #2B2F36;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #474D57;
+}
+
+.chart-container canvas {
+  display: block;
+}
+
+/* Pulsing dot animation */
+@keyframes livePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.85); }
+}
+.live-dot {
+  animation: livePulse 1.8s ease-in-out infinite;
+}
+
+/* Brain glow animation */
+@keyframes brainGlow {
+  0% { box-shadow: 0 0 10px #2563EB44, 0 0 30px #00E6FF22; }
+  50% { box-shadow: 0 0 25px #2563EB88, 0 0 60px #00E6FF44; }
+  100% { box-shadow: 0 0 10px #2563EB44, 0 0 30px #00E6FF22; }
+}
+.brain-glow {
+  animation: brainGlow 3s ease-in-out infinite;
+}
+
+/* Neon border */
+@keyframes neonPulse {
+  0%, 100% { border-color: #00E6FF44; }
+  50% { border-color: #00E6FF99; }
+}
+.neon-border {
+  animation: neonPulse 2s ease-in-out infinite;
+}
+
+/* Active ring */
+@keyframes activeRing {
+  0% { box-shadow: 0 0 0 0 #02C07644; }
+  70% { box-shadow: 0 0 0 6px #02C07600; }
+  100% { box-shadow: 0 0 0 0 #02C07600; }
+}
+.active-ring {
+  animation: activeRing 2s ease-out infinite;
+}
+
+/* Number ticker */
+.font-mono {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+/* Gauge clip */
+.gauge-clip {
+  clip-path: inset(50% 0 0 0);
+}
