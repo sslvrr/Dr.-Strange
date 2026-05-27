@@ -27,8 +27,9 @@ export default function TradingChart({ history, currentCandle, predictions, symb
   const upperLineRef  = useRef<ISeriesApi<'Line'> | null>(null);
   const medianLineRef = useRef<ISeriesApi<'Line'> | null>(null);
   const lowerLineRef  = useRef<ISeriesApi<'Line'> | null>(null);
-  const initDoneRef   = useRef(false);
-  const scrolledRef   = useRef(false);
+  const initDoneRef      = useRef(false);
+  const scrolledRef      = useRef(false);
+  const lastSymbolRef    = useRef<string>('');
 
   // Track last prediction timestamps to avoid unnecessary redraws
   const lastPredTimesRef = useRef<string>('');
@@ -150,10 +151,11 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       cancelAnimationFrame(rafId);
       ro.disconnect();
       chart.remove();
-      initDoneRef.current   = false;
-      scrolledRef.current   = false;
+      initDoneRef.current      = false;
+      scrolledRef.current      = false;
+      lastSymbolRef.current    = '';
       lastPredTimesRef.current = '';
-      candleRef.current     = null;
+      candleRef.current        = null;
       volumeRef.current     = null;
       upperAreaRef.current  = null;
       upperLineRef.current  = null;
@@ -162,11 +164,28 @@ export default function TradingChart({ history, currentCandle, predictions, symb
     };
   }, []);
 
-  // ── History: load once per symbol ────────────────────────────────────────
+  // ── History: reload cleanly on symbol change, update on history change ───
   useEffect(() => {
-    if (!candleRef.current || history.length === 0) return;
-    const sorted = [...history].sort((a, b) => a.time - b.time);
+    if (!candleRef.current) return;
 
+    // Symbol changed — wipe all series and reset state flags before new data arrives
+    if (symbol !== lastSymbolRef.current) {
+      lastSymbolRef.current    = symbol;
+      scrolledRef.current      = false;
+      lastPredTimesRef.current = '';
+      candleRef.current.setData([]);
+      volumeRef.current?.setData([]);
+      upperAreaRef.current?.setData([]);
+      upperLineRef.current?.setData([]);
+      medianLineRef.current?.setData([]);
+      lowerLineRef.current?.setData([]);
+      // Re-enable autoScale for the new symbol so the price range fits
+      chartRef.current?.priceScale('right').applyOptions({ autoScale: true });
+    }
+
+    if (history.length === 0) return;
+
+    const sorted = [...history].sort((a, b) => a.time - b.time);
     candleRef.current.setData(sorted as any);
 
     volumeRef.current?.setData(
@@ -177,10 +196,11 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       })) as any
     );
 
-    // Scroll once to right edge — only on first history load per symbol
     if (!scrolledRef.current) {
       chartRef.current?.timeScale().scrollToRealTime();
       scrolledRef.current = true;
+      // Lock vertical scale after initial fit so live ticks don't cause vertical jumps
+      chartRef.current?.priceScale('right').applyOptions({ autoScale: false });
     }
   }, [history, symbol]);
 
