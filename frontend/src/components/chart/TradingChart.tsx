@@ -178,6 +178,8 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       upperLineRef.current?.setData([]);
       medianLineRef.current?.setData([]);
       lowerLineRef.current?.setData([]);
+      // Re-enable autoScale for the new symbol so incoming history fits correctly;
+      // it will be locked again after scrollToRealTime settles below.
       chartRef.current?.priceScale('right').applyOptions({ autoScale: true });
     }
 
@@ -197,10 +199,13 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       chartRef.current?.timeScale().scrollToRealTime();
       scrolledRef.current = true;
 
-      // Save the logical range one frame after scrollToRealTime has settled.
-      // All subsequent prediction setData() calls restore this range to keep
-      // the viewport locked — future timestamps never shift what's visible.
+      // One frame after scrollToRealTime settles:
+      // 1. Lock the Y axis — price stays near base via backend mean-reversion,
+      //    so historical range always fits live candles. Prevents Y-axis jumping.
+      // 2. Save the logical range — restored after every prediction setData()
+      //    to prevent future timestamps from shifting the viewport rightward.
       requestAnimationFrame(() => {
+        chartRef.current?.priceScale('right').applyOptions({ autoScale: false });
         const range = chartRef.current?.timeScale().getVisibleLogicalRange();
         if (range) lockedRangeRef.current = { from: range.from, to: range.to };
       });

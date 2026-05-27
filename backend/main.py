@@ -158,12 +158,17 @@ class LivePredictor:
         return len(str(ts).split('.')[-1])
 
     def compute_next_tick(self) -> dict:
-        """Simulate a live ticking candle at 200ms resolution."""
-        micro_vol = self.config.volatility * 0.015
-        change = random.normalvariate(0, micro_vol)
-        # Momentum bias based on CVD
+        """Simulate a live ticking candle. Realistic intra-bar noise with mean reversion."""
+        # 7.5× smaller tick noise — keeps price from walking off the historical range
+        micro_vol = self.config.volatility * 0.002
+        # Gentle mean-reversion pull toward base price — prevents unlimited drift
+        mean_pull = (self.config.base_price - self.current_price) * 0.003
+        change = random.normalvariate(mean_pull, micro_vol)
         bias = self.feature_engine.cvd / max(abs(self.feature_engine.cvd), 1) * micro_vol * 0.1
-        self.current_price = round(self.current_price + change + bias, self._decimals())
+        self.current_price = round(
+            max(self.config.base_price * 0.5, self.current_price + change + bias),
+            self._decimals()
+        )
         direction = 1 if change > 0 else -1
         self.candle_direction = direction
         volume = abs(random.normalvariate(200, 80))
@@ -318,7 +323,7 @@ async def websocket_stream(websocket: WebSocket, symbol: str):
                 await websocket.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
                 await websocket.send_json({"type": "REGIME", "regime": engine.get_regime()})
 
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(1.0)
 
     except WebSocketDisconnect:
         pass
