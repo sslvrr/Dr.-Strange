@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, Layers, Layout, RefreshCw } from 'lucide-react';
 import dynamic from 'next/dynamic';
-import type { OHLCV, QuantilePrediction, AssetConfig } from '@/types/trading';
+import type { OHLCV, QuantilePrediction, AssetConfig, MarketRegime } from '@/types/trading';
 import { RSIPanel, MACDPanel } from '@/components/chart/IndicatorPanels';
 
 const TradingChart = dynamic(() => import('@/components/chart/TradingChart'), {
@@ -23,6 +23,7 @@ interface Props {
   currentCandle: OHLCV | null;
   predictions: QuantilePrediction[];
   status: string;
+  regime?: MarketRegime;
   priceChange?: number;
   priceChangePct?: number;
   timeframe: string;
@@ -51,7 +52,7 @@ function LiveClock() {
 }
 
 export default function ChartArea({
-  config, history, currentCandle, predictions, status,
+  config, history, currentCandle, predictions, status, regime,
   priceChange = 0, priceChangePct = 0,
   timeframe, onTimeframeChange,
 }: Props) {
@@ -151,15 +152,18 @@ export default function ChartArea({
       {/* ── Chart canvas — fills ALL remaining height ── */}
       <div className="relative flex-1 min-h-0">
 
-        {/* AI Market Regime badge */}
+        {/* AI Market Regime badge — live from backend */}
         <div className="absolute top-2 left-2 z-10 rounded-lg px-2.5 py-2"
           style={{ background: '#0D1117EE', border: '1px solid #2B2F36', backdropFilter: 'blur(6px)' }}>
           <div className="flex items-center gap-1.5 mb-0.5">
             <div className="live-dot w-1.5 h-1.5 rounded-full bg-[#02C076]" />
             <span className="text-[9px] text-[#848E9C]">AI Market Regime</span>
           </div>
-          <div className="text-[11px] font-bold text-[#02C076]">BULLISH TREND</div>
-          <div className="text-[9px] text-[#848E9C]">Confidence: 72%</div>
+          <div className="text-[11px] font-bold"
+            style={{ color: regime?.label === 'BEARISH TREND' ? '#FF433D' : regime?.label === 'RANGING' ? '#FFB800' : regime?.label === 'HIGH VOLATILITY' ? '#A855F7' : '#02C076' }}>
+            {regime?.label ?? 'LOADING…'}
+          </div>
+          <div className="text-[9px] text-[#848E9C]">Confidence: {regime?.confidence ?? '--'}%</div>
         </div>
 
         {/* Forecast labels — only when we have predictions */}

@@ -27,18 +27,20 @@ export default function TradingChart({ history, currentCandle, predictions, symb
   const upperLineRef  = useRef<ISeriesApi<'Line'> | null>(null);
   const medianLineRef = useRef<ISeriesApi<'Line'> | null>(null);
   const lowerLineRef  = useRef<ISeriesApi<'Line'> | null>(null);
+
   const initDoneRef      = useRef(false);
   const scrolledRef      = useRef(false);
   const lastSymbolRef    = useRef<string>('');
-
-  // Track last prediction timestamps to avoid unnecessary redraws
   const lastPredTimesRef = useRef<string>('');
+
+  // Saved logical range — restored after every prediction setData() so
+  // future-timestamped series never shift the visible viewport.
+  const lockedRangeRef   = useRef<{ from: number; to: number } | null>(null);
 
   // ── Build chart once ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current || initDoneRef.current) return;
     initDoneRef.current = true;
-    scrolledRef.current = false;
 
     const chart = createChart(containerRef.current, {
       layout: {
@@ -59,7 +61,6 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       rightPriceScale: {
         borderColor: '#2B2F36',
         textColor: '#848E9C',
-        // Lock to Normal mode — prevents scale jumps
         mode: PriceScaleMode.Normal,
         autoScale: true,
         scaleMargins: { top: 0.08, bottom: 0.12 },
@@ -68,8 +69,8 @@ export default function TradingChart({ history, currentCandle, predictions, symb
         borderColor: '#2B2F36',
         timeVisible: true,
         secondsVisible: false,
-        rightOffset: 24,
-        lockVisibleTimeRangeOnResize: true,  // prevents horizontal jump on resize
+        rightOffset: 12,
+        lockVisibleTimeRangeOnResize: true,
       },
       handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true },
       handleScale:  { mouseWheel: true, pinch: true, axisPressedMouseMove: true },
@@ -78,7 +79,6 @@ export default function TradingChart({ history, currentCandle, predictions, symb
     });
     chartRef.current = chart;
 
-    // ── Candles (main pane) ───────────────────────────────────────────────
     candleRef.current = chart.addCandlestickSeries({
       upColor: '#02C076', downColor: '#FF433D',
       borderUpColor: '#02C076', borderDownColor: '#FF433D',
@@ -86,16 +86,13 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       priceLineVisible: false,
     });
 
-    // ── Volume (overlaid, small margin at bottom of same pane) ───────────
     volumeRef.current = chart.addHistogramSeries({
       priceFormat: { type: 'volume' },
       priceScaleId: 'vol',
     });
-    chart.priceScale('vol').applyOptions({
-      scaleMargins: { top: 0.88, bottom: 0 },
-    });
+    chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.88, bottom: 0 } });
 
-    // ── Forecast: cyan area fill ──────────────────────────────────────────
+    // Forecast area fill
     upperAreaRef.current = chart.addAreaSeries({
       topColor:    '#00E6FF1A',
       bottomColor: '#00E6FF05',
@@ -106,7 +103,7 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       crosshairMarkerVisible: false,
     });
 
-    // ── Forecast: upper τ0.90 dashed cyan ────────────────────────────────
+    // Upper τ0.90 dashed cyan
     upperLineRef.current = chart.addLineSeries({
       color: '#00E6FF', lineWidth: 2, lineStyle: LineStyle.Dashed,
       title: '↑ 90%',
@@ -114,7 +111,7 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       crosshairMarkerRadius: 4,
     });
 
-    // ── Forecast: median τ0.50 solid gold ────────────────────────────────
+    // Median τ0.50 solid gold
     medianLineRef.current = chart.addLineSeries({
       color: '#FFB800', lineWidth: 3, lineStyle: LineStyle.Solid,
       title: '● 50%',
@@ -123,7 +120,7 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       crosshairMarkerBackgroundColor: '#FFB80099',
     });
 
-    // ── Forecast: lower τ0.10 dashed red ─────────────────────────────────
+    // Lower τ0.10 dashed red
     lowerLineRef.current = chart.addLineSeries({
       color: '#FF433D', lineWidth: 2, lineStyle: LineStyle.Dashed,
       title: '↓ 10%',
@@ -131,7 +128,7 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       crosshairMarkerRadius: 4,
     });
 
-    // ── Stable resize: debounced, only on actual size change ─────────────
+    // Debounced resize — only fires when size actually changes
     let rafId = 0;
     let lastW = 0, lastH = 0;
     const ro = new ResizeObserver(() => {
@@ -140,7 +137,7 @@ export default function TradingChart({ history, currentCandle, predictions, symb
         if (!containerRef.current || !chartRef.current) return;
         const w = containerRef.current.clientWidth;
         const h = containerRef.current.clientHeight;
-        if (w === lastW && h === lastH) return; // no actual change
+        if (w === lastW && h === lastH) return;
         lastW = w; lastH = h;
         chartRef.current.applyOptions({ width: w, height: h });
       });
@@ -151,35 +148,36 @@ export default function TradingChart({ history, currentCandle, predictions, symb
       cancelAnimationFrame(rafId);
       ro.disconnect();
       chart.remove();
-      initDoneRef.current      = false;
-      scrolledRef.current      = false;
-      lastSymbolRef.current    = '';
+      initDoneRef.current    = false;
+      scrolledRef.current    = false;
+      lastSymbolRef.current  = '';
       lastPredTimesRef.current = '';
-      candleRef.current        = null;
-      volumeRef.current     = null;
-      upperAreaRef.current  = null;
-      upperLineRef.current  = null;
-      medianLineRef.current = null;
-      lowerLineRef.current  = null;
+      lockedRangeRef.current = null;
+      candleRef.current      = null;
+      volumeRef.current      = null;
+      upperAreaRef.current   = null;
+      upperLineRef.current   = null;
+      medianLineRef.current  = null;
+      lowerLineRef.current   = null;
     };
   }, []);
 
-  // ── History: reload cleanly on symbol change, update on history change ───
+  // ── Symbol change + history load ─────────────────────────────────────────
   useEffect(() => {
     if (!candleRef.current) return;
 
-    // Symbol changed — wipe all series and reset state flags before new data arrives
+    // On symbol change: wipe everything and reset all position refs
     if (symbol !== lastSymbolRef.current) {
       lastSymbolRef.current    = symbol;
       scrolledRef.current      = false;
       lastPredTimesRef.current = '';
+      lockedRangeRef.current   = null;
       candleRef.current.setData([]);
       volumeRef.current?.setData([]);
       upperAreaRef.current?.setData([]);
       upperLineRef.current?.setData([]);
       medianLineRef.current?.setData([]);
       lowerLineRef.current?.setData([]);
-      // Re-enable autoScale for the new symbol so the price range fits
       chartRef.current?.priceScale('right').applyOptions({ autoScale: true });
     }
 
@@ -187,7 +185,6 @@ export default function TradingChart({ history, currentCandle, predictions, symb
 
     const sorted = [...history].sort((a, b) => a.time - b.time);
     candleRef.current.setData(sorted as any);
-
     volumeRef.current?.setData(
       sorted.map((c) => ({
         time: c.time,
@@ -199,12 +196,18 @@ export default function TradingChart({ history, currentCandle, predictions, symb
     if (!scrolledRef.current) {
       chartRef.current?.timeScale().scrollToRealTime();
       scrolledRef.current = true;
-      // Lock vertical scale after initial fit so live ticks don't cause vertical jumps
-      chartRef.current?.priceScale('right').applyOptions({ autoScale: false });
+
+      // Save the logical range one frame after scrollToRealTime has settled.
+      // All subsequent prediction setData() calls restore this range to keep
+      // the viewport locked — future timestamps never shift what's visible.
+      requestAnimationFrame(() => {
+        const range = chartRef.current?.timeScale().getVisibleLogicalRange();
+        if (range) lockedRangeRef.current = { from: range.from, to: range.to };
+      });
     }
   }, [history, symbol]);
 
-  // ── Live tick: update only current candle (no layout change) ─────────────
+  // ── Live tick: update current candle only ────────────────────────────────
   useEffect(() => {
     if (!candleRef.current || !currentCandle) return;
     candleRef.current.update(currentCandle as any);
@@ -215,14 +218,13 @@ export default function TradingChart({ history, currentCandle, predictions, symb
     } as any);
   }, [currentCandle]);
 
-  // ── Predictions: only redraw when forecast timestamps change ─────────────
-  // (every 60 ticks ≈ every 12 seconds, not every 200ms tick)
+  // ── Predictions: redraw only when bar timestamps change ──────────────────
   useEffect(() => {
     if (!upperLineRef.current || predictions.length === 0) return;
 
-    // Fingerprint by first + last timestamp — predictions shift only when a new bar opens
+    // Only redraw when the bar boundaries shift (typically once per hour)
     const fp = `${predictions[0]?.time}-${predictions[predictions.length - 1]?.time}`;
-    if (fp === lastPredTimesRef.current) return; // nothing changed
+    if (fp === lastPredTimesRef.current) return;
     lastPredTimesRef.current = fp;
 
     const sorted = [...predictions].sort((a, b) => a.time - b.time);
@@ -230,6 +232,12 @@ export default function TradingChart({ history, currentCandle, predictions, symb
     upperLineRef.current.setData(sorted.map((p) => ({ time: p.time, value: p.upper })) as any);
     medianLineRef.current?.setData(sorted.map((p) => ({ time: p.time, value: p.median })) as any);
     lowerLineRef.current?.setData(sorted.map((p) => ({ time: p.time, value: p.lower })) as any);
+
+    // Restore the locked range immediately — setData() with future timestamps
+    // would otherwise push the viewport rightward into the forecast zone.
+    if (lockedRangeRef.current) {
+      chartRef.current?.timeScale().setVisibleLogicalRange(lockedRangeRef.current);
+    }
   }, [predictions]);
 
   return <div ref={containerRef} className="w-full h-full" />;

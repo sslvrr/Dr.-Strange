@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import ConfidenceGauge from '@/components/ui/ConfidenceGauge';
 import { useCountdown } from '@/hooks/useCountdown';
+import type { MarketRegime } from '@/types/trading';
 
 const LEARNING_LOG = [
   { time: '12:20', event: 'Model retrained on new data', value: '+2.3%',           type: 'pos' },
@@ -51,7 +52,7 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 }
 
 /* ── 1. AI Neural Engine ── */
-function NeuralPanel() {
+function NeuralPanel({ confidence }: { confidence: number }) {
   return (
     <Panel title="AI Neural Engine">
       <div className="flex items-center gap-3">
@@ -73,7 +74,7 @@ function NeuralPanel() {
       </div>
       <div className="flex items-center justify-between">
         <span className="text-[9px] text-[#848E9C]">Overall Confidence</span>
-        <ConfidenceGauge value={72} size={52} strokeWidth={5} />
+        <ConfidenceGauge value={confidence} size={52} strokeWidth={5} />
       </div>
     </Panel>
   );
@@ -104,8 +105,14 @@ function SelfLearningPanel() {
 }
 
 /* ── 3. Model Adaptation ── */
-function AdaptationPanel() {
+function AdaptationPanel({ regime }: { regime?: MarketRegime }) {
   const data = [40, 48, 52, 50, 58, 62, 60, 68, 72, 70, 76, 80];
+  const regimeLabel = regime?.label ?? 'LOADING…';
+  const regimeColor = regime?.label === 'BEARISH TREND' ? '#FF433D'
+    : regime?.label === 'HIGH VOLATILITY' ? '#A855F7'
+    : regime?.label === 'RANGING' ? '#FFB800'
+    : '#02C076';
+  const regimePct = regime?.confidence ?? 0;
   return (
     <Panel title="Model Adaptation">
       <div>
@@ -115,20 +122,24 @@ function AdaptationPanel() {
           {['May 18', 'May 20', 'May 22', 'May 24'].map((l) => <span key={l}>{l}</span>)}
         </div>
       </div>
-      {[
-        ['Regime Adaptation', 'Trending Bull', '#02C076', 87],
-        ['Volatility Adaptation', 'High Volatility', '#FFB800', 71],
-      ].map(([k, v, c, pct]) => (
-        <div key={k as string}>
-          <div className="flex justify-between text-[9px] mb-0.5">
-            <span className="text-[#848E9C]">{k}</span>
-            <span className="font-semibold" style={{ color: c as string }}>{v}</span>
-          </div>
-          <div className="h-1 bg-[#0D1117] rounded-full">
-            <div className="h-full rounded-full" style={{ width: `${pct}%`, background: c as string }} />
-          </div>
+      <div>
+        <div className="flex justify-between text-[9px] mb-0.5">
+          <span className="text-[#848E9C]">Regime Adaptation</span>
+          <span className="font-semibold" style={{ color: regimeColor }}>{regimeLabel}</span>
         </div>
-      ))}
+        <div className="h-1 bg-[#0D1117] rounded-full">
+          <div className="h-full rounded-full" style={{ width: `${regimePct}%`, background: regimeColor }} />
+        </div>
+      </div>
+      <div>
+        <div className="flex justify-between text-[9px] mb-0.5">
+          <span className="text-[#848E9C]">Volatility Adaptation</span>
+          <span className="font-semibold text-[#FFB800]">High Volatility</span>
+        </div>
+        <div className="h-1 bg-[#0D1117] rounded-full">
+          <div className="h-full rounded-full" style={{ width: '71%', background: '#FFB800' }} />
+        </div>
+      </div>
     </Panel>
   );
 }
@@ -172,7 +183,7 @@ function ArchitecturePanel() {
 }
 
 /* ── 5. Forecast Quality ── */
-function QualityPanel() {
+function QualityPanel({ confidence }: { confidence: number }) {
   const metrics = [
     { k: 'Directional Accuracy', v: '68.4%', pct: 68, c: '#02C076' },
     { k: 'Forecast Efficiency',  v: '1.32',  pct: 66, c: '#00E6FF' },
@@ -200,7 +211,7 @@ function QualityPanel() {
           <div className="text-[9px] text-[#848E9C]">Overall</div>
           <div className="text-xs font-bold text-[#02C076]">Good</div>
         </div>
-        <ConfidenceGauge value={74} size={46} strokeWidth={5} color="#02C076" />
+        <ConfidenceGauge value={confidence} size={46} strokeWidth={5} color="#02C076" />
       </div>
     </Panel>
   );
@@ -241,14 +252,15 @@ function LogPanel() {
 }
 
 /* ── Combined strip ── */
-export default function BottomPanels() {
+export default function BottomPanels({ confidence, regime }: { confidence?: number; regime?: MarketRegime }) {
+  const conf = confidence ?? 72;
   return (
     <div className="grid grid-cols-6 gap-2 px-2 py-2" style={{ height: 196 }}>
-      <NeuralPanel />
+      <NeuralPanel confidence={conf} />
       <SelfLearningPanel />
-      <AdaptationPanel />
+      <AdaptationPanel regime={regime} />
       <ArchitecturePanel />
-      <QualityPanel />
+      <QualityPanel confidence={conf} />
       <LogPanel />
     </div>
   );

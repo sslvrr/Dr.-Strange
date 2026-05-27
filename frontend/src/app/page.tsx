@@ -15,7 +15,7 @@ export default function Home() {
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
   const [timeframe, setTimeframe] = useState('1h');
   const config = ASSET_CONFIGS[selectedSymbol];
-  const { history, currentCandle, predictions, signal, status } = useAssetStream(selectedSymbol);
+  const { history, currentCandle, predictions, signal, regime, status } = useAssetStream(selectedSymbol);
   const tickerEntry = TICKER_DATA.find((t) => t.symbol === selectedSymbol);
 
   return (
@@ -32,6 +32,7 @@ export default function Home() {
             currentCandle={currentCandle}
             predictions={predictions}
             status={status}
+            regime={regime ?? undefined}
             priceChange={tickerEntry?.change ?? 0}
             priceChangePct={tickerEntry?.changePct ?? 0}
             timeframe={timeframe}
@@ -46,7 +47,7 @@ export default function Home() {
       </div>
 
       <div className="flex-shrink-0 border-t border-[#2B2F36]" style={{ background: '#0B0E11' }}>
-        <BottomPanels />
+        <BottomPanels confidence={signal?.confidence} regime={regime ?? undefined} />
       </div>
 
       <BottomNav />
