@@ -272,21 +272,21 @@ async def websocket_stream(websocket: WebSocket, symbol: str):
     config = ASSET_REGISTRY[symbol]
     engine = LivePredictor(config)
 
-    # 1. Bootstrap: send 120 bars of history
-    history = engine.generate_historical_data(120)
-    await websocket.send_json({"type": "HISTORY", "data": history})
-
-    # 2. Send initial signal + regime
-    await websocket.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
-    await websocket.send_json({"type": "REGIME", "regime": engine.get_regime()})
-
-    # 3. High-frequency tick loop
-    active_open  = engine.current_price
-    active_high  = engine.current_price
-    active_low   = engine.current_price
-    signal_tick  = 0
-
     try:
+        # 1. Bootstrap: send 120 bars of history
+        history = engine.generate_historical_data(120)
+        await websocket.send_json({"type": "HISTORY", "data": history})
+
+        # 2. Send initial signal + regime
+        await websocket.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
+        await websocket.send_json({"type": "REGIME", "regime": engine.get_regime()})
+
+        # 3. Tick loop
+        active_open  = engine.current_price
+        active_high  = engine.current_price
+        active_low   = engine.current_price
+        signal_tick  = 0
+
         while True:
             now = int(time.time() // 3600) * 3600
             if now > engine.current_timestamp:
@@ -317,15 +317,15 @@ async def websocket_stream(websocket: WebSocket, symbol: str):
                 "predictions": predictions,
             })
 
-            # Refresh signal every 50 ticks (~10s)
+            # Refresh signal every 30 ticks (~30s)
             signal_tick += 1
-            if signal_tick % 50 == 0:
+            if signal_tick % 30 == 0:
                 await websocket.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
                 await websocket.send_json({"type": "REGIME", "regime": engine.get_regime()})
 
             await asyncio.sleep(1.0)
 
     except WebSocketDisconnect:
-        pass
+        print(f"[WS] {symbol} client disconnected normally")
     except Exception as e:
-        print(f"[WS] Error on {symbol}: {e}")
+        print(f"[WS] {symbol} ERROR {type(e).__name__}: {e}", flush=True)
