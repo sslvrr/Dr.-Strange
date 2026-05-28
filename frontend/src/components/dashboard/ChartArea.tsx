@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, Layers, Layout, RefreshCw } from 'lucide-react';
+import { Layers } from 'lucide-react';
 import ForecastCanvas from '@/components/chart/ForecastCanvas';
 import TradingChart from '@/components/chart/TradingChart';
 import type { TradingChartHandle } from '@/components/chart/TradingChart';
@@ -8,7 +8,6 @@ import type { OHLCV, QuantilePrediction, AssetConfig, MarketRegime, AISignal } f
 import { RSIPanel, MACDPanel } from '@/components/chart/IndicatorPanels';
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', 'D', 'W'];
-const RANGES     = ['1D', '5D', '1M', '3M', '6M', 'YTD', '1Y', '5Y', 'All'];
 
 interface Props {
   config: AssetConfig;
@@ -36,13 +35,13 @@ function LiveClock() {
   useEffect(() => {
     const tick = () => {
       const n = new Date();
-      setT(`${String(n.getUTCHours()).padStart(2,'0')}:${String(n.getUTCMinutes()).padStart(2,'0')}:${String(n.getUTCSeconds()).padStart(2,'0')} (UTC)`);
+      setT(`${String(n.getUTCHours()).padStart(2,'0')}:${String(n.getUTCMinutes()).padStart(2,'0')}:${String(n.getUTCSeconds()).padStart(2,'0')} UTC`);
     };
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, []);
-  return <span className="font-mono">{t}</span>;
+  return <span className="font-mono text-[#848E9C]">{t}</span>;
 }
 
 export default function ChartArea({
@@ -53,21 +52,19 @@ export default function ChartArea({
   const [showIndicators, setShowIndicators] = useState(false);
   const chartHandleRef = useRef<TradingChartHandle | null>(null);
 
-  const latest  = currentCandle ?? history[history.length - 1];
-  const close   = latest?.close ?? config.basePrice;
-  const open    = latest?.open  ?? close;
-  const high    = latest?.high  ?? close;
-  const low     = latest?.low   ?? close;
-  const pos     = priceChange >= 0;
+  const latest = currentCandle ?? history[history.length - 1];
+  const close  = latest?.close ?? config.basePrice;
+  const open   = latest?.open  ?? close;
+  const high   = latest?.high  ?? close;
+  const low    = latest?.low   ?? close;
+  const pos    = priceChange >= 0;
 
-  const isLive     = status === 'live';
+  const isLive      = status === 'live';
   const statusColor = isLive ? '#02C076' : '#FF433D';
-  const statusText  = isLive ? '● LIVE ENGINE CONNECTED' : `● ${status.toUpperCase()}`;
+  const statusText  = isLive ? '● LIVE' : `● ${status.toUpperCase()}`;
 
-  // Separator timestamp = current bar's open time
   const separatorTime = currentCandle?.time ?? 0;
 
-  // Derive bullish probability from the median forecast slope
   const bullPct = (() => {
     if (predictions.length < 2) return 62;
     const slope = predictions[predictions.length - 1].median - predictions[0].median;
@@ -77,11 +74,18 @@ export default function ChartArea({
   return (
     <div className="flex flex-col h-full overflow-hidden">
 
-      {/* ── Chart toolbar ── */}
+      {/* ── Toolbar ── */}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#2B2F36] flex-shrink-0 bg-[#0D1117]">
+
+        {/* Symbol + OHLC */}
         <div className="flex items-center gap-2 flex-shrink-0">
           <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-black"
-            style={{ background: config.symbol.startsWith('BTC') ? '#F7931A' : config.symbol.startsWith('ETH') ? '#627EEA' : config.symbol.startsWith('SOL') ? '#9945FF' : '#02C076' }}>
+            style={{
+              background: config.symbol.startsWith('BTC') ? '#F7931A'
+                : config.symbol.startsWith('ETH') ? '#627EEA'
+                : config.symbol.startsWith('SOL') ? '#9945FF'
+                : '#02C076'
+            }}>
             {config.symbol[0]}
           </div>
           <span className="text-xs font-bold text-[#EAECEF]">{config.symbol}</span>
@@ -106,30 +110,30 @@ export default function ChartArea({
           {TIMEFRAMES.map((tf) => (
             <button key={tf} onClick={() => onTimeframeChange(tf)}
               className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
-                timeframe === tf ? 'bg-[#2563EB] text-white' : 'text-[#848E9C] hover:text-[#EAECEF] hover:bg-[#1A2030]'
+                timeframe === tf
+                  ? 'bg-[#2563EB] text-white'
+                  : 'text-[#848E9C] hover:text-[#EAECEF] hover:bg-[#1A2030]'
               }`}>
               {tf}
             </button>
           ))}
-          <button className="px-1 text-[#848E9C] hover:text-[#EAECEF]"><ChevronDown size={12} /></button>
         </div>
 
         <div className="w-px h-4 bg-[#2B2F36] mx-1" />
 
-        <div className="flex gap-1">
-          <button onClick={() => setShowIndicators(!showIndicators)}
-            className="flex items-center gap-1 px-2 py-1 rounded text-[11px] text-[#848E9C] hover:text-[#EAECEF] hover:bg-[#1A2030] transition-colors">
-            <Layers size={11} /><span>Indicators</span>
-          </button>
-          <button className="flex items-center gap-1 px-2 py-1 rounded text-[11px] text-[#848E9C] hover:text-[#EAECEF] hover:bg-[#1A2030] transition-colors">
-            <Layout size={11} /><span>Templates</span>
-          </button>
-          <button className="flex items-center gap-1 px-2 py-1 rounded text-[11px] text-[#848E9C] hover:text-[#EAECEF] hover:bg-[#1A2030] transition-colors">
-            <RefreshCw size={11} /><span>Replay</span>
-          </button>
-        </div>
+        {/* Indicators toggle */}
+        <button
+          onClick={() => setShowIndicators(!showIndicators)}
+          className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] transition-colors ${
+            showIndicators
+              ? 'text-[#00E6FF] bg-[#00E6FF11]'
+              : 'text-[#848E9C] hover:text-[#EAECEF] hover:bg-[#1A2030]'
+          }`}>
+          <Layers size={11} /><span>Indicators</span>
+        </button>
       </div>
 
+      {/* Indicators dropdown */}
       {showIndicators && (
         <div className="absolute z-20 mt-8 ml-2 bg-[#161B22] border border-[#2B2F36] rounded-lg p-3 shadow-2xl"
           style={{ top: 80 }}>
@@ -154,7 +158,12 @@ export default function ChartArea({
             <span className="text-[9px] text-[#848E9C]">AI Market Regime</span>
           </div>
           <div className="text-[11px] font-bold"
-            style={{ color: regime?.label === 'BEARISH TREND' ? '#FF433D' : regime?.label === 'RANGING' ? '#FFB800' : regime?.label === 'HIGH VOLATILITY' ? '#A855F7' : '#02C076' }}>
+            style={{
+              color: regime?.label === 'BEARISH TREND' ? '#FF433D'
+                : regime?.label === 'RANGING' ? '#FFB800'
+                : regime?.label === 'HIGH VOLATILITY' ? '#A855F7'
+                : '#02C076'
+            }}>
             {regime?.label ?? 'LOADING…'}
           </div>
           <div className="text-[9px] text-[#848E9C]">Confidence: {regime?.confidence ?? '--'}%</div>
@@ -171,7 +180,7 @@ export default function ChartArea({
               <div className="text-[9px] text-[#848E9C]">Prob. {bullPct}%</div>
             </div>
 
-            <div className="absolute bottom-10 right-2 z-10 text-right">
+            <div className="absolute bottom-2 right-2 z-10 text-right">
               <div className="text-[10px] font-bold text-[#FF433D] px-2 py-1 rounded mb-1"
                 style={{ background: '#FF433D11', border: '1px solid #FF433D33' }}>
                 BEARISH SCENARIO
@@ -180,7 +189,7 @@ export default function ChartArea({
             </div>
 
             {/* Forecast legend */}
-            <div className="absolute bottom-10 left-2 z-10 flex flex-col gap-1">
+            <div className="absolute bottom-2 left-2 z-10 flex flex-col gap-1">
               {[
                 { color: '#00E6FF', label: '↑ Upper 90%', dash: true },
                 { color: '#FFB800', label: '● Median 50%', dash: false },
@@ -212,7 +221,7 @@ export default function ChartArea({
           </span>
         </div>
 
-        {/* Forecast canvas overlay — separator line + historical/forecast labels */}
+        {/* Forecast separator overlay */}
         {separatorTime > 0 && (
           <ForecastCanvas chartRef={chartHandleRef} separatorTime={separatorTime} />
         )}
@@ -230,23 +239,14 @@ export default function ChartArea({
       <RSIPanel  history={history} currentCandle={currentCandle} />
       <MACDPanel history={history} currentCandle={currentCandle} />
 
-      {/* ── Bottom bar ── */}
-      <div className="flex items-center justify-between px-3 py-1 border-t border-[#2B2F36] flex-shrink-0 bg-[#0D1117]">
-        <div className="flex gap-0.5">
-          {RANGES.map((r) => (
-            <button key={r}
-              className="px-1.5 py-0.5 rounded text-[10px] text-[#848E9C] hover:text-[#EAECEF] hover:bg-[#161B22] transition-colors">
-              {r}
-            </button>
-          ))}
+      {/* ── Bottom status bar ── */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-t border-[#2B2F36] flex-shrink-0 bg-[#0D1117]">
+        <div className="text-[10px] text-[#5E6673]">
+          {history.length > 0
+            ? `${history.length} bars · H1 · ${config.exchange}`
+            : 'Awaiting data…'}
         </div>
-        <div className="flex items-center gap-2 text-[10px] text-[#848E9C]">
-          <LiveClock />
-          <span className="text-[#2B2F36]">|</span>
-          <button className="hover:text-[#EAECEF]">%</button>
-          <button className="hover:text-[#EAECEF]">log</button>
-          <button className="hover:text-[#EAECEF]">auto</button>
-        </div>
+        <LiveClock />
       </div>
     </div>
   );

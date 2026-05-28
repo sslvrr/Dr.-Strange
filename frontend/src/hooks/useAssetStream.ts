@@ -15,31 +15,22 @@ interface StreamState {
 }
 
 export function useAssetStream(symbol: string) {
-  const wsRef          = useRef<WebSocket | null>(null);
-  const reconnectRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mountedRef     = useRef(false);
-  // Each new connection gets a unique ID. onclose/onmessage handlers capture
-  // their own ID and bail out if it no longer matches — prevents the React
-  // Strict-Mode race where the old socket's onclose fires after the new mount
-  // has already set mountedRef back to true, scheduling a spurious reconnect.
-  const connIdRef      = useRef(0);
+  const wsRef        = useRef<WebSocket | null>(null);
+  const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef   = useRef(false);
+  const connIdRef    = useRef(0);
 
   const [state, setState] = useState<StreamState>({
-    history: [],
-    currentCandle: null,
-    predictions: [],
-    signal: null,
-    regime: null,
-    metrics: null,
+    history: [], currentCandle: null, predictions: [],
+    signal: null, regime: null, metrics: null,
     status: 'connecting',
   });
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
 
-    // Tear down any existing socket cleanly
     if (wsRef.current) {
-      wsRef.current.onclose = null; // prevent old onclose from firing
+      wsRef.current.onclose = null;
       wsRef.current.close();
       wsRef.current = null;
     }
@@ -48,8 +39,9 @@ export function useAssetStream(symbol: string) {
       reconnectRef.current = null;
     }
 
-    const id = ++connIdRef.current; // unique stamp for this connection
-    setState((s) => ({ ...s, status: 'connecting', history: [], currentCandle: null, predictions: [] }));
+    const id = ++connIdRef.current;
+    // Only update status — keep history visible during reconnect so chart doesn't blank
+    setState((s) => ({ ...s, status: 'connecting' }));
 
     const wsBase = `ws://${window.location.hostname}:8001`;
     const ws = new WebSocket(`${wsBase}/ws/stream/${symbol}`);
@@ -65,13 +57,18 @@ export function useAssetStream(symbol: string) {
       try {
         const payload: WsMessage = JSON.parse(event.data);
         if (payload.type === 'HISTORY' && payload.data) {
-          setState((s) => ({ ...s, history: payload.data! }));
+          setState((s) => ({
+            ...s,
+            history: payload.data!,
+            currentCandle: null,
+            predictions: [],
+          }));
         } else if (payload.type === 'TICK') {
           setState((s) => ({
             ...s,
             currentCandle: payload.candle ?? s.currentCandle,
-            predictions: payload.predictions ?? s.predictions,
-            metrics: payload.metrics ?? s.metrics,
+            predictions:   payload.predictions ?? s.predictions,
+            metrics:       payload.metrics ?? s.metrics,
           }));
         } else if (payload.type === 'SIGNAL' && payload.signal) {
           setState((s) => ({ ...s, signal: payload.signal! }));
@@ -84,7 +81,6 @@ export function useAssetStream(symbol: string) {
     };
 
     ws.onclose = () => {
-      // Stale close: this socket was superseded by a newer connection — ignore.
       if (id !== connIdRef.current || !mountedRef.current) return;
       setState((s) => ({ ...s, status: 'disconnected' }));
       reconnectRef.current = setTimeout(connect, 3000);
@@ -96,13 +92,24 @@ export function useAssetStream(symbol: string) {
     };
   }, [symbol]);
 
+  // When symbol changes, immediately clear stale data from the previous symbol
+  const prevSymbolRef = useRef(symbol);
+  useEffect(() => {
+    if (symbol !== prevSymbolRef.current) {
+      prevSymbolRef.current = symbol;
+      setState((s) => ({
+        ...s,
+        history: [], currentCandle: null, predictions: [],
+        signal: null, regime: null,
+      }));
+    }
+  }, [symbol]);
+
   useEffect(() => {
     mountedRef.current = true;
     connect();
     return () => {
       mountedRef.current = false;
-      // Null the onclose BEFORE closing so the stale-close guard isn't needed
-      // here — we're intentionally tearing down, not reconnecting.
       if (wsRef.current) {
         wsRef.current.onclose = null;
         wsRef.current.close();

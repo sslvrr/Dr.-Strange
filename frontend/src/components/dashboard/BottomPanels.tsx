@@ -276,8 +276,7 @@ function LogPanel({ metrics }: { metrics?: Metrics }) {
       </div>
       <div className="border-t border-[#2B2F36] pt-2">
         <div className="text-[9px] text-[#848E9C] mb-1 uppercase tracking-wider">Next Retrain</div>
-        <div className="flex items-center justify-between">
-          <div className="flex gap-2">
+        <div className="flex gap-2">
             {[{ v: h, u: 'HRS' }, { v: m, u: 'MIN' }, { v: s, u: 'SEC' }].map(({ v, u }) => (
               <div key={u} className="text-center">
                 <div className="text-sm font-mono font-bold text-[#EAECEF]">{v}</div>
@@ -285,10 +284,6 @@ function LogPanel({ metrics }: { metrics?: Metrics }) {
               </div>
             ))}
           </div>
-          <button className="px-2.5 py-1 rounded text-[9px] font-semibold text-white bg-[#2563EB] hover:bg-[#1d4ed8] transition-colors">
-            Train Now
-          </button>
-        </div>
       </div>
     </Panel>
   );
