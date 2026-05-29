@@ -103,21 +103,21 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
 
     upperLineRef.current = chart.addLineSeries({
       color: '#00E6FF', lineWidth: 2, lineStyle: LineStyle.Dashed,
-      title: '↑ 90%', priceLineVisible: false, lastValueVisible: true,
-      crosshairMarkerRadius: 4,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerRadius: 4, crosshairMarkerVisible: true,
     });
 
     medianLineRef.current = chart.addLineSeries({
       color: '#FFB800', lineWidth: 3,
-      title: '● 50%', priceLineVisible: false, lastValueVisible: true,
+      priceLineVisible: false, lastValueVisible: false,
       crosshairMarkerRadius: 5,
       crosshairMarkerBackgroundColor: '#FFB80099',
     });
 
     lowerLineRef.current = chart.addLineSeries({
       color: '#FF433D', lineWidth: 2, lineStyle: LineStyle.Dashed,
-      title: '↓ 10%', priceLineVisible: false, lastValueVisible: true,
-      crosshairMarkerRadius: 4,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerRadius: 4, crosshairMarkerVisible: true,
     });
 
     // Ghost candles — drawn on top of forecast lines, semi-transparent

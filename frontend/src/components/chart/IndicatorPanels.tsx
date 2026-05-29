@@ -24,14 +24,22 @@ function ema(vals: number[], p: number) {
   return r;
 }
 function computeMACD(data: OHLCV[]) {
-  const c = data.map((d) => d.close);
+  const c  = data.map((d) => d.close);
   const mv = ema(c, 12).map((v, i) => v - ema(c, 26)[i]);
   const sv = ema(mv, 9);
   const macd: { t: number; m: number; s: number; h: number }[] = [];
   for (let i = 33; i < data.length; i++) {
-    macd.push({ t: data[i].time, m: +mv[i].toFixed(2), s: +sv[i].toFixed(2), h: +(mv[i] - sv[i]).toFixed(2) });
+    macd.push({ t: data[i].time, m: mv[i], s: sv[i], h: mv[i] - sv[i] });
   }
   return macd;
+}
+
+function fmtMacd(v: number): string {
+  const a = Math.abs(v);
+  if (a >= 10)    return v.toFixed(2);
+  if (a >= 0.1)   return v.toFixed(4);
+  if (a >= 0.001) return v.toFixed(6);
+  return v.toExponential(2);
 }
 
 // ── Canvas painter ─────────────────────────────────────────────────────────
@@ -194,7 +202,7 @@ export function MACDPanel({ history, currentCandle }: PanelProps) {
       [last.s, '#FFB800', 'Sig'],
     ].forEach(([v, c, label]) => {
       ctx.fillStyle = c as string;
-      ctx.fillText(`${label} ${(v as number).toFixed(2)}`, W - pad.r + 4, yOf(v as number) + 3);
+      ctx.fillText(`${label} ${fmtMacd(v as number)}`, W - pad.r + 4, yOf(v as number) + 3);
     });
   }, [history, currentCandle]);
 

@@ -150,6 +150,16 @@ export default function ChartArea({
       {/* ── Chart canvas ── */}
       <div className="relative flex-1 min-h-0">
 
+        {/* Loading overlay — shown while waiting for first HISTORY message */}
+        {history.length === 0 && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3"
+            style={{ background: '#0B0E11DD', backdropFilter: 'blur(2px)' }}>
+            <div className="w-6 h-6 border-2 rounded-full animate-spin"
+              style={{ borderColor: '#00E6FF44', borderTopColor: '#00E6FF' }} />
+            <span className="text-xs text-[#848E9C]">Loading {config.symbol} data…</span>
+          </div>
+        )}
+
         {/* AI Market Regime badge */}
         <div className="absolute top-2 left-2 z-10 rounded-lg px-2.5 py-2"
           style={{ background: '#0D1117EE', border: '1px solid #2B2F36', backdropFilter: 'blur(6px)' }}>
