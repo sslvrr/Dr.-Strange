@@ -58,14 +58,26 @@ export interface Metrics {
   last_retrain_secs_ago: number;
 }
 
+export interface IntelRow {
+  label: string;
+  value: string;
+  type: 'positive' | 'negative' | 'neutral' | 'warning';
+}
+
+export interface MarketIntel {
+  market_intel: IntelRow[];
+  liquidity: IntelRow[];
+}
+
 export interface WsMessage {
-  type: 'HISTORY' | 'TICK' | 'SIGNAL' | 'REGIME';
+  type: 'HISTORY' | 'TICK' | 'SIGNAL' | 'REGIME' | 'INTEL';
   data?: OHLCV[];
   candle?: OHLCV;
   predictions?: QuantilePrediction[];
   signal?: AISignal;
   regime?: MarketRegime;
   metrics?: Metrics;
+  intel?: MarketIntel;
 }
 
 export interface AssetConfig {

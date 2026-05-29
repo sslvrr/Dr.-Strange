@@ -243,7 +243,7 @@ export default function ChartArea({
       <div className="flex items-center justify-between px-3 py-1.5 border-t border-[#2B2F36] flex-shrink-0 bg-[#0D1117]">
         <div className="text-[10px] text-[#5E6673]">
           {history.length > 0
-            ? `${history.length} bars · H1 · ${config.exchange}`
+            ? `${history.length} bars · ${timeframe.toUpperCase()} · ${config.exchange}`
             : 'Awaiting data…'}
         </div>
         <LiveClock />

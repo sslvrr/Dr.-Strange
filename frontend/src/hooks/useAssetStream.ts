@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { OHLCV, QuantilePrediction, AISignal, MarketRegime, Metrics, WsMessage } from '@/types/trading';
+import type { OHLCV, QuantilePrediction, AISignal, MarketRegime, Metrics, MarketIntel, WsMessage } from '@/types/trading';
 
 export type ConnectionStatus = 'connecting' | 'live' | 'disconnected' | 'error';
 
@@ -11,10 +11,11 @@ interface StreamState {
   signal: AISignal | null;
   regime: MarketRegime | null;
   metrics: Metrics | null;
+  intel: MarketIntel | null;
   status: ConnectionStatus;
 }
 
-export function useAssetStream(symbol: string) {
+export function useAssetStream(symbol: string, timeframe: string = '1h') {
   const wsRef        = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef   = useRef(false);
@@ -22,7 +23,7 @@ export function useAssetStream(symbol: string) {
 
   const [state, setState] = useState<StreamState>({
     history: [], currentCandle: null, predictions: [],
-    signal: null, regime: null, metrics: null,
+    signal: null, regime: null, metrics: null, intel: null,
     status: 'connecting',
   });
 
@@ -40,11 +41,10 @@ export function useAssetStream(symbol: string) {
     }
 
     const id = ++connIdRef.current;
-    // Only update status — keep history visible during reconnect so chart doesn't blank
     setState((s) => ({ ...s, status: 'connecting' }));
 
     const wsBase = `ws://${window.location.hostname}:8001`;
-    const ws = new WebSocket(`${wsBase}/ws/stream/${symbol}`);
+    const ws = new WebSocket(`${wsBase}/ws/stream/${symbol}?tf=${timeframe}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -74,6 +74,8 @@ export function useAssetStream(symbol: string) {
           setState((s) => ({ ...s, signal: payload.signal! }));
         } else if (payload.type === 'REGIME' && payload.regime) {
           setState((s) => ({ ...s, regime: payload.regime! }));
+        } else if (payload.type === 'INTEL' && payload.intel) {
+          setState((s) => ({ ...s, intel: payload.intel! }));
         }
       } catch {
         // ignore malformed frames
@@ -90,20 +92,21 @@ export function useAssetStream(symbol: string) {
       if (id !== connIdRef.current || !mountedRef.current) return;
       setState((s) => ({ ...s, status: 'error' }));
     };
-  }, [symbol]);
+  }, [symbol, timeframe]);
 
-  // When symbol changes, immediately clear stale data from the previous symbol
-  const prevSymbolRef = useRef(symbol);
+  // Clear stale data when symbol or timeframe changes
+  const prevKeyRef = useRef(`${symbol}:${timeframe}`);
   useEffect(() => {
-    if (symbol !== prevSymbolRef.current) {
-      prevSymbolRef.current = symbol;
+    const key = `${symbol}:${timeframe}`;
+    if (key !== prevKeyRef.current) {
+      prevKeyRef.current = key;
       setState((s) => ({
         ...s,
         history: [], currentCandle: null, predictions: [],
-        signal: null, regime: null,
+        signal: null, regime: null, intel: null,
       }));
     }
-  }, [symbol]);
+  }, [symbol, timeframe]);
 
   useEffect(() => {
     mountedRef.current = true;

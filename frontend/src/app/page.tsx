@@ -17,7 +17,7 @@ export default function Home() {
   const [livePrices, setLivePrices] = useState<Record<string, number>>({});
 
   const config = ASSET_CONFIGS[selectedSymbol];
-  const { history, currentCandle, predictions, signal, regime, metrics, status } = useAssetStream(selectedSymbol);
+  const { history, currentCandle, predictions, signal, regime, metrics, intel, status } = useAssetStream(selectedSymbol, timeframe);
 
   // Track live price for the active symbol so TopNav shows it in the ticker bar
   useEffect(() => {
@@ -62,7 +62,7 @@ export default function Home() {
 
         <div className="flex-shrink-0 border-l border-[#2B2F36] overflow-y-auto"
           style={{ width: 244, background: '#0D1117' }}>
-          <AISignalPanel signal={signal ?? undefined} />
+          <AISignalPanel signal={signal ?? undefined} intel={intel ?? undefined} />
         </div>
       </div>
 
