@@ -21,16 +21,17 @@ interface Props {
 const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart(
   { history, currentCandle, predictions, signal, symbol }, ref
 ) {
-  const containerRef  = useRef<HTMLDivElement>(null);
-  const chartRef      = useRef<IChartApi | null>(null);
-  const candleRef     = useRef<ISeriesApi<'Candlestick'> | null>(null);
-  const volumeRef     = useRef<ISeriesApi<'Histogram'> | null>(null);
-  const upperAreaRef  = useRef<ISeriesApi<'Area'> | null>(null);
-  const upperLineRef  = useRef<ISeriesApi<'Line'> | null>(null);
-  const medianLineRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const lowerLineRef  = useRef<ISeriesApi<'Line'> | null>(null);
-  const priceLinesRef = useRef<any[]>([]);
-  const lastSymbolRef = useRef<string>('');
+  const containerRef    = useRef<HTMLDivElement>(null);
+  const chartRef        = useRef<IChartApi | null>(null);
+  const candleRef       = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const volumeRef       = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const ghostRef        = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const upperAreaRef    = useRef<ISeriesApi<'Area'> | null>(null);
+  const upperLineRef    = useRef<ISeriesApi<'Line'> | null>(null);
+  const medianLineRef   = useRef<ISeriesApi<'Line'> | null>(null);
+  const lowerLineRef    = useRef<ISeriesApi<'Line'> | null>(null);
+  const priceLinesRef   = useRef<any[]>([]);
+  const lastSymbolRef   = useRef<string>('');
 
   useImperativeHandle(ref, () => ({
     getNowX: (timestamp: number) => {
@@ -44,7 +45,6 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Use real dimensions; fall back to sensible defaults if layout hasn't settled
     const w = containerRef.current.clientWidth  || 800;
     const h = containerRef.current.clientHeight || 500;
 
@@ -71,7 +71,7 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
       },
       timeScale: {
         borderColor: '#2B2F36', timeVisible: true,
-        secondsVisible: false, rightOffset: 12,
+        secondsVisible: false, rightOffset: 14,
         lockVisibleTimeRangeOnResize: true,
       },
       handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true },
@@ -80,6 +80,7 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
     });
     chartRef.current = chart;
 
+    // Real candles — drawn first (bottom layer)
     candleRef.current = chart.addCandlestickSeries({
       upColor: '#02C076', downColor: '#FF433D',
       borderUpColor: '#02C076', borderDownColor: '#FF433D',
@@ -92,8 +93,9 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
     });
     chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.88, bottom: 0 } });
 
+    // Forecast area band (behind lines)
     upperAreaRef.current = chart.addAreaSeries({
-      topColor: '#00E6FF1A', bottomColor: '#00E6FF05',
+      topColor: '#00E6FF0D', bottomColor: '#00E6FF05',
       lineColor: 'transparent', lineWidth: 1,
       priceLineVisible: false, lastValueVisible: false,
       crosshairMarkerVisible: false,
@@ -118,7 +120,20 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
       crosshairMarkerRadius: 4,
     });
 
-    // Resize observer — keeps chart sized to its container
+    // Ghost candles — drawn on top of forecast lines, semi-transparent
+    // Bullish ghost: teal body · Bearish ghost: purple body
+    ghostRef.current = chart.addCandlestickSeries({
+      upColor:        '#00E6FF55',
+      downColor:      '#A855F755',
+      borderUpColor:  '#00E6FFEE',
+      borderDownColor:'#A855F7EE',
+      wickUpColor:    '#00E6FFCC',
+      wickDownColor:  '#A855F7CC',
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    // Resize observer
     let rafId = 0;
     let lastW = 0, lastH = 0;
     const ro = new ResizeObserver(() => {
@@ -141,6 +156,7 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
       chartRef.current      = null;
       candleRef.current     = null;
       volumeRef.current     = null;
+      ghostRef.current      = null;
       upperAreaRef.current  = null;
       upperLineRef.current  = null;
       medianLineRef.current = null;
@@ -148,13 +164,12 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
       priceLinesRef.current = [];
       lastSymbolRef.current = '';
     };
-  }, []); // runs once
+  }, []);
 
-  // ── History: set all candles when history arrives or symbol switches ─────
+  // ── History ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!candleRef.current || history.length === 0) return;
 
-    // Symbol switched — clear forecast series and price lines
     if (symbol !== lastSymbolRef.current) {
       lastSymbolRef.current = symbol;
       priceLinesRef.current.forEach(pl => {
@@ -165,6 +180,7 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
       upperLineRef.current?.setData([]);
       medianLineRef.current?.setData([]);
       lowerLineRef.current?.setData([]);
+      ghostRef.current?.setData([]);
     }
 
     const sorted = [...history].sort((a, b) => a.time - b.time);
@@ -176,12 +192,10 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
         color: c.close >= c.open ? '#02C07633' : '#FF433D33',
       })) as any
     );
-
-    // Scroll to show the most recent bar with forecast space on the right
     chartRef.current?.timeScale().scrollToRealTime();
   }, [history, symbol]);
 
-  // ── Tick: update the live (in-progress) candle only ─────────────────────
+  // ── Tick: update the live in-progress candle ─────────────────────────────
   useEffect(() => {
     if (!candleRef.current || !currentCandle) return;
     candleRef.current.update(currentCandle as any);
@@ -192,17 +206,37 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
     } as any);
   }, [currentCandle]);
 
-  // ── Predictions: redraw forecast paths ───────────────────────────────────
+  // ── Predictions: forecast lines + ghost candles ───────────────────────────
   useEffect(() => {
     if (!upperLineRef.current || predictions.length === 0) return;
+
     const sorted = [...predictions].sort((a, b) => a.time - b.time);
+
+    // Forecast lines + area
     upperAreaRef.current?.setData(sorted.map((p) => ({ time: p.time, value: p.upper })) as any);
     upperLineRef.current.setData(sorted.map((p) => ({ time: p.time, value: p.upper })) as any);
     medianLineRef.current?.setData(sorted.map((p) => ({ time: p.time, value: p.median })) as any);
     lowerLineRef.current?.setData(sorted.map((p) => ({ time: p.time, value: p.lower })) as any);
-  }, [predictions]);
 
-  // ── AI Signal: Entry / SL / TP price lines ───────────────────────────────
+    // Ghost candles — open at previous median, close at this median
+    // high = upper quantile, low = lower quantile
+    if (!ghostRef.current) return;
+    const lastRealClose = currentCandle?.close ?? history[history.length - 1]?.close ?? sorted[0].median;
+    const ghostBars = sorted.map((p, i) => {
+      const open  = i === 0 ? lastRealClose : sorted[i - 1].median;
+      const close = p.median;
+      return {
+        time:  p.time,
+        open,
+        high:  p.upper,
+        low:   p.lower,
+        close,
+      };
+    });
+    ghostRef.current.setData(ghostBars as any);
+  }, [predictions, currentCandle, history]);
+
+  // ── AI Signal: price lines ────────────────────────────────────────────────
   useEffect(() => {
     if (!candleRef.current || !signal) return;
     priceLinesRef.current.forEach(pl => {

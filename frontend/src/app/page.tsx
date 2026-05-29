@@ -2,8 +2,6 @@
 import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import TopNav from '@/components/dashboard/TopNav';
-import LeftToolbar from '@/components/dashboard/LeftToolbar';
-import BottomNav from '@/components/dashboard/BottomNav';
 import AISignalPanel from '@/components/dashboard/AISignalPanel';
 import BottomPanels from '@/components/dashboard/BottomPanels';
 import { useAssetStream } from '@/hooks/useAssetStream';
@@ -19,17 +17,15 @@ export default function Home() {
   const config = ASSET_CONFIGS[selectedSymbol];
   const { history, currentCandle, predictions, signal, regime, metrics, intel, status } = useAssetStream(selectedSymbol, timeframe);
 
-  // Track live price for the active symbol so TopNav shows it in the ticker bar
   useEffect(() => {
     if (currentCandle?.close != null) {
       setLivePrices(prev => ({ ...prev, [selectedSymbol]: currentCandle.close }));
     }
   }, [currentCandle?.close, selectedSymbol]);
 
-  // Compute price change vs static seed (shown in ChartArea toolbar)
-  const seedEntry = TICKER_DATA.find((t) => t.symbol === selectedSymbol);
-  const liveClose = currentCandle?.close ?? seedEntry?.price ?? 0;
-  const seedPrice  = seedEntry?.price ?? liveClose;
+  const seedEntry      = TICKER_DATA.find((t) => t.symbol === selectedSymbol);
+  const liveClose      = currentCandle?.close ?? seedEntry?.price ?? 0;
+  const seedPrice      = seedEntry?.price ?? liveClose;
   const priceChange    = liveClose - seedPrice;
   const priceChangePct = seedPrice > 0 ? (priceChange / seedPrice) * 100 : 0;
 
@@ -42,8 +38,6 @@ export default function Home() {
       />
 
       <div className="flex min-h-0" style={{ flex: '1 1 0' }}>
-        <LeftToolbar />
-
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
           <ChartArea
             config={config}
@@ -73,8 +67,6 @@ export default function Home() {
           metrics={metrics ?? undefined}
         />
       </div>
-
-      <BottomNav />
     </div>
   );
 }

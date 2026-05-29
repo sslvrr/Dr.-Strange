@@ -1,6 +1,6 @@
 'use client';
 import { useState } from 'react';
-import { Search } from 'lucide-react';
+import { Search, Bell, BriefcaseBusiness } from 'lucide-react';
 import { TICKER_DATA } from '@/types/trading';
 
 interface TopNavProps {
@@ -11,12 +11,14 @@ interface TopNavProps {
 
 export default function TopNav({ selectedSymbol, onSelectSymbol, livePrices }: TopNavProps) {
   const [searchFocused, setSearchFocused] = useState(false);
+  const [activeNav, setActiveNav] = useState<string | null>(null);
 
   return (
     <div className="flex-shrink-0 border-b border-[#2B2F36] bg-[#0D1117]">
 
-      {/* Brand + search + live indicator */}
+      {/* Brand + search + actions */}
       <div className="flex items-center h-11 px-3 gap-3">
+        {/* Brand */}
         <div className="flex items-center gap-2 flex-shrink-0">
           <div className="w-6 h-6 rounded bg-gradient-to-br from-[#00E6FF] to-[#2563EB] flex items-center justify-center">
             <span className="text-[10px] font-bold text-black">✦</span>
@@ -25,6 +27,7 @@ export default function TopNav({ selectedSymbol, onSelectSymbol, livePrices }: T
           <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-[#2563EB] text-white">PRO</span>
         </div>
 
+        {/* Search */}
         <div
           className={`flex items-center gap-2 rounded-lg px-3 py-1.5 transition-colors ${
             searchFocused ? 'bg-[#1A2030] border border-[#00E6FF44]' : 'bg-[#161B22] border border-[#2B2F36]'
@@ -42,7 +45,35 @@ export default function TopNav({ selectedSymbol, onSelectSymbol, livePrices }: T
 
         <div className="flex-1" />
 
-        {/* Live status indicator (static — no button) */}
+        {/* Alerts */}
+        <button
+          onClick={() => setActiveNav(activeNav === 'alerts' ? null : 'alerts')}
+          title="Alerts"
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all border ${
+            activeNav === 'alerts'
+              ? 'text-[#FFB800] border-[#FFB80044] bg-[#FFB80011]'
+              : 'text-[#848E9C] border-[#2B2F36] hover:text-[#EAECEF] hover:bg-[#161B22]'
+          }`}
+        >
+          <Bell size={13} />
+          <span>Alerts</span>
+        </button>
+
+        {/* Portfolio */}
+        <button
+          onClick={() => setActiveNav(activeNav === 'portfolio' ? null : 'portfolio')}
+          title="Portfolio"
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all border ${
+            activeNav === 'portfolio'
+              ? 'text-[#00E6FF] border-[#00E6FF44] bg-[#00E6FF11]'
+              : 'text-[#848E9C] border-[#2B2F36] hover:text-[#EAECEF] hover:bg-[#161B22]'
+          }`}
+        >
+          <BriefcaseBusiness size={13} />
+          <span>Portfolio</span>
+        </button>
+
+        {/* Live status */}
         <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[#2B2F36] bg-[#161B22]">
           <div className="live-dot w-1.5 h-1.5 rounded-full bg-[#02C076]" />
           <span className="text-[11px] text-[#EAECEF]">Live</span>
