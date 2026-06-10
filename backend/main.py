@@ -66,7 +66,8 @@ app.add_middleware(
 
 
 # ── Telegram alerts ───────────────────────────────────────────────────────────
-_tg_last_direction: Dict[str, str] = {}   # symbol → last alerted direction
+_tg_last_direction: Dict[str, str]   = {}   # key → last alerted direction
+_tg_last_alert_ts:  Dict[str, float] = {}   # key → last alert unix timestamp
 _tg_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 
@@ -89,13 +90,21 @@ def _fmt_price(v: float, decimals: int) -> str:
     return f"{v:,.{decimals}f}"
 
 
-async def _alert_signal(signal: dict, symbol: str, timeframe: str):
-    """Send a Telegram alert when signal direction changes for this symbol."""
+async def _alert_signal(signal: dict, symbol: str, timeframe: str, bar_secs: int = 3600):
+    """Send a Telegram alert when signal direction changes — at most once per bar."""
     direction = signal["direction"]
     key = f"{symbol}:{timeframe}"
+    now = time.time()
+
+    # Cooldown: don't alert more than once per full bar period
+    if now - _tg_last_alert_ts.get(key, 0) < bar_secs:
+        return
+    # Also deduplicate: skip if direction hasn't changed since last alert
     if _tg_last_direction.get(key) == direction:
         return
+
     _tg_last_direction[key] = direction
+    _tg_last_alert_ts[key]  = now
 
     d       = len(str(signal["entryZone"][0]).split(".")[-1]) if "." in str(signal["entryZone"][0]) else 0
     arrow   = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
@@ -153,12 +162,13 @@ async def _alert_outcome(outcome: dict):
 
 
 async def _ws_signal(ws: "WebSocket", engine: "LivePredictor", tf_cfg: dict, alert: bool = False):
-    """Send SIGNAL message; optionally fire Telegram if direction changed."""
+    """Send SIGNAL message; optionally fire Telegram if direction changed and cooldown elapsed."""
     sig = engine.get_ai_signal()
     await ws.send_json({"type": "SIGNAL", "signal": sig})
     if alert:
-        tf_label = SECS_TO_TF.get(tf_cfg["secs"], "1h")
-        asyncio.create_task(_alert_signal(sig, engine.config.symbol, tf_label))
+        tf_label  = SECS_TO_TF.get(tf_cfg["secs"], "1h")
+        bar_secs  = tf_cfg["secs"]
+        asyncio.create_task(_alert_signal(sig, engine.config.symbol, tf_label, bar_secs))
     return sig
 
 
