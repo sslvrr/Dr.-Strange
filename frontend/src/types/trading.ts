@@ -30,6 +30,7 @@ export interface AISignal {
   stopLoss: [number, number];
   riskReward: number;
   validUntil: string;
+  stats?: PredictionStats;
 }
 
 export interface MarketRegime {
@@ -82,6 +83,33 @@ export interface WsMessage {
   regime?: MarketRegime;
   metrics?: Metrics;
   intel?: MarketIntel;
+  outcome?: PredictionOutcome;
+}
+
+// Prediction outcome tracking
+export interface PredictionStats {
+  symbol: string;
+  tp1_wins: number;
+  tp2_wins: number;
+  losses: number;
+  total: number;
+  win_rate: number;
+  pending: boolean;
+}
+
+export interface PredictionOutcome {
+  symbol: string;
+  direction: 'LONG' | 'SHORT';
+  entry: number;
+  close_price: number;
+  outcome: 'TP1_WIN' | 'TP2_WIN' | 'LOSS' | 'EXPIRED';
+  ticks: number;
+  tp1: [number, number];
+  tp2: [number, number];
+  sl: [number, number];
+  open_time: number;
+  close_time: number;
+  stats: PredictionStats;
 }
 
 // /api/scan response types

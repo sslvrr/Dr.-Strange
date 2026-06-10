@@ -1,8 +1,24 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { OHLCV, QuantilePrediction, AISignal, MarketRegime, Metrics, MarketIntel, WsMessage } from '@/types/trading';
+import type { OHLCV, QuantilePrediction, AISignal, MarketRegime, Metrics, MarketIntel, PredictionOutcome, WsMessage } from '@/types/trading';
 
 export type ConnectionStatus = 'connecting' | 'live' | 'disconnected' | 'error';
+
+const STORAGE_KEY = 'ds_predictions_v1';
+const MAX_STORED  = 200;
+
+function loadOutcomes(): PredictionOutcome[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function saveOutcomes(outcomes: PredictionOutcome[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(outcomes.slice(-MAX_STORED)));
+  } catch {}
+}
 
 interface StreamState {
   history: OHLCV[];
@@ -15,6 +31,9 @@ interface StreamState {
   status: ConnectionStatus;
 }
 
+// Outcomes are stored separately so they persist across symbol switches
+let _globalOutcomes: PredictionOutcome[] = [];
+
 export function useAssetStream(symbol: string, timeframe: string = '1h') {
   const wsRef        = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -26,6 +45,21 @@ export function useAssetStream(symbol: string, timeframe: string = '1h') {
     signal: null, regime: null, metrics: null, intel: null,
     status: 'connecting',
   });
+
+  const [outcomes, setOutcomes] = useState<PredictionOutcome[]>(() => {
+    // Load from localStorage on first render (client only)
+    if (typeof window !== 'undefined') {
+      _globalOutcomes = loadOutcomes();
+      return _globalOutcomes;
+    }
+    return [];
+  });
+
+  const addOutcome = useCallback((o: PredictionOutcome) => {
+    _globalOutcomes = [o, ..._globalOutcomes].slice(0, MAX_STORED);
+    saveOutcomes(_globalOutcomes);
+    setOutcomes([..._globalOutcomes]);
+  }, []);
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
@@ -57,13 +91,9 @@ export function useAssetStream(symbol: string, timeframe: string = '1h') {
       try {
         const payload: WsMessage = JSON.parse(event.data);
         if (payload.type === 'HISTORY' && payload.data) {
-          setState((s) => ({
-            ...s,
-            history: payload.data!,
-            currentCandle: null,
-            predictions: [],
-          }));
+          setState((s) => ({ ...s, history: payload.data!, currentCandle: null, predictions: [] }));
         } else if (payload.type === 'TICK') {
+          if (payload.outcome) addOutcome(payload.outcome);
           setState((s) => ({
             ...s,
             currentCandle: payload.candle ?? s.currentCandle,
@@ -92,9 +122,9 @@ export function useAssetStream(symbol: string, timeframe: string = '1h') {
       if (id !== connIdRef.current || !mountedRef.current) return;
       setState((s) => ({ ...s, status: 'error' }));
     };
-  }, [symbol, timeframe]);
+  }, [symbol, timeframe, addOutcome]);
 
-  // Clear stale data when symbol or timeframe changes
+  // Clear stale chart data when symbol or timeframe changes (keep outcomes — they're global)
   const prevKeyRef = useRef(`${symbol}:${timeframe}`);
   useEffect(() => {
     const key = `${symbol}:${timeframe}`;
@@ -125,5 +155,5 @@ export function useAssetStream(symbol: string, timeframe: string = '1h') {
     };
   }, [connect]);
 
-  return state;
+  return { ...state, outcomes };
 }

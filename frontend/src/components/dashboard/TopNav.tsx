@@ -7,9 +7,11 @@ interface TopNavProps {
   selectedSymbol: string;
   onSelectSymbol: (symbol: string) => void;
   livePrices?: Record<string, number>;
+  showPredictions?: boolean;
+  onTogglePredictions?: () => void;
 }
 
-export default function TopNav({ selectedSymbol, onSelectSymbol, livePrices }: TopNavProps) {
+export default function TopNav({ selectedSymbol, onSelectSymbol, livePrices, showPredictions, onTogglePredictions }: TopNavProps) {
   const [searchFocused, setSearchFocused] = useState(false);
   const [activeNav, setActiveNav] = useState<string | null>(null);
 
@@ -59,18 +61,18 @@ export default function TopNav({ selectedSymbol, onSelectSymbol, livePrices }: T
           <span>Alerts</span>
         </button>
 
-        {/* Portfolio */}
+        {/* Predictions / Portfolio tab */}
         <button
-          onClick={() => setActiveNav(activeNav === 'portfolio' ? null : 'portfolio')}
-          title="Portfolio"
+          onClick={onTogglePredictions}
+          title="Prediction Tracker"
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all border ${
-            activeNav === 'portfolio'
+            showPredictions
               ? 'text-[#00E6FF] border-[#00E6FF44] bg-[#00E6FF11]'
               : 'text-[#848E9C] border-[#2B2F36] hover:text-[#EAECEF] hover:bg-[#161B22]'
           }`}
         >
           <BriefcaseBusiness size={13} />
-          <span>Portfolio</span>
+          <span>Predictions</span>
         </button>
 
         {/* Live status */}

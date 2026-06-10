@@ -427,6 +427,100 @@ class FeatureEngine:
         }
 
 
+# ── Prediction outcome tracker ────────────────────────────────────────────────
+class PredictionTracker:
+    """Tracks each AI signal from open to TP/SL resolution."""
+
+    MAX_TICKS = 200  # expire after ~200 ticks without resolution
+
+    def __init__(self, symbol: str):
+        self.symbol  = symbol
+        self.pending: Optional[dict] = None
+        self.tp1_wins  = 0
+        self.tp2_wins  = 0
+        self.losses    = 0
+
+    def on_signal(self, signal: dict):
+        """Start tracking a new signal only when direction changes."""
+        if self.pending and self.pending["direction"] == signal["direction"]:
+            return
+        mid = lambda zone: (zone[0] + zone[1]) / 2
+        self.pending = {
+            "direction": signal["direction"],
+            "entry":     mid(signal["entryZone"]),
+            "tp1_mid":   mid(signal["takeProfit1"]),
+            "tp2_mid":   mid(signal["takeProfit2"]),
+            "sl_mid":    mid(signal["stopLoss"]),
+            "tp1":       signal["takeProfit1"],
+            "tp2":       signal["takeProfit2"],
+            "sl":        signal["stopLoss"],
+            "open_time": int(time.time()),
+            "ticks":     0,
+        }
+
+    def on_tick(self, price: float) -> Optional[dict]:
+        """Check current price against pending signal. Returns outcome dict or None."""
+        if not self.pending:
+            return None
+        p = self.pending
+        p["ticks"] += 1
+
+        hit = None
+        if p["direction"] == "LONG":
+            if price >= p["tp2_mid"]:   hit = "TP2_WIN"
+            elif price >= p["tp1_mid"]: hit = "TP1_WIN"
+            elif price <= p["sl_mid"]:  hit = "LOSS"
+        else:
+            if price <= p["tp2_mid"]:   hit = "TP2_WIN"
+            elif price <= p["tp1_mid"]: hit = "TP1_WIN"
+            elif price >= p["sl_mid"]:  hit = "LOSS"
+
+        if hit is None and p["ticks"] >= self.MAX_TICKS:
+            hit = "EXPIRED"
+
+        if hit:
+            return self._resolve(hit, price)
+        return None
+
+    def _resolve(self, outcome: str, price: float) -> dict:
+        p = self.pending
+        self.pending = None
+        if outcome == "TP1_WIN":
+            self.tp1_wins += 1
+        elif outcome == "TP2_WIN":
+            self.tp1_wins += 1
+            self.tp2_wins += 1
+        elif outcome == "LOSS":
+            self.losses += 1
+        total = self.tp1_wins + self.losses
+        return {
+            "symbol":      self.symbol,
+            "direction":   p["direction"],
+            "entry":       round(p["entry"], 6),
+            "close_price": round(price, 6),
+            "outcome":     outcome,
+            "ticks":       p["ticks"],
+            "tp1":         p["tp1"],
+            "tp2":         p["tp2"],
+            "sl":          p["sl"],
+            "open_time":   p["open_time"],
+            "close_time":  int(time.time()),
+            "stats":       self.get_stats(),
+        }
+
+    def get_stats(self) -> dict:
+        total = self.tp1_wins + self.losses
+        return {
+            "symbol":    self.symbol,
+            "tp1_wins":  self.tp1_wins,
+            "tp2_wins":  self.tp2_wins,
+            "losses":    self.losses,
+            "total":     total,
+            "win_rate":  round(self.tp1_wins / max(total, 1) * 100, 1),
+            "pending":   self.pending is not None,
+        }
+
+
 # ── Live predictor ─────────────────────────────────────────────────────────────
 def _nearest_round(price: float, tick: float) -> float:
     """Snap to nearest 00/50 psychological level."""
@@ -445,6 +539,7 @@ class LivePredictor:
         self.current_timestamp = int(time.time() // bar_seconds) * bar_seconds
         self.feature_engine    = FeatureEngine(config)
         self.regime_detector   = MarketRegimeDetector()
+        self.tracker           = PredictionTracker(config.symbol)
 
     def _decimals(self) -> int:
         ts = self.config.tick_size
@@ -592,7 +687,7 @@ class LivePredictor:
         next_bar = (int(time.time() // bs) + 1) * bs
         valid_dt = datetime.fromtimestamp(next_bar, tz=timezone.utc).strftime("%d %b %Y %H:%M UTC")
 
-        return {
+        signal = {
             "direction":  direction,
             "confidence": confidence,
             "entryZone":   [entry_lo, entry_hi],
@@ -601,7 +696,10 @@ class LivePredictor:
             "stopLoss":    [sl_lo, sl_hi],
             "riskReward":  max(0.1, rr),
             "validUntil":  f"Next candle close — {valid_dt}",
+            "stats":       self.tracker.get_stats(),
         }
+        self.tracker.on_signal(signal)
+        return signal
 
     def get_regime(self) -> dict:
         return self.regime_detector.detect()
@@ -704,9 +802,13 @@ async def _stream_binance(ws: WebSocket, symbol: str, engine: LivePredictor, tf_
                 "volume": round(float(k["v"]), 2),
             }
             signal_tick += 1
-            await ws.send_json({"type": "TICK", "candle": candle,
-                                "predictions": engine.predict_future_paths(),
-                                "metrics": _metrics(signal_tick, session_start)})
+            outcome = engine.tracker.on_tick(close_p)
+            tick_msg: dict = {"type": "TICK", "candle": candle,
+                              "predictions": engine.predict_future_paths(),
+                              "metrics": _metrics(signal_tick, session_start)}
+            if outcome:
+                tick_msg["outcome"] = outcome
+            await ws.send_json(tick_msg)
 
             if signal_tick % 30 == 0:
                 await _fetch_funding_rates()
@@ -821,9 +923,13 @@ async def _stream_oanda(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
                 candle = {"time": engine.current_timestamp, "open": active_open,
                           "high": active_high, "low": active_low, "close": mid, "volume": 1000.0}
                 signal_tick += 1
-                await ws.send_json({"type": "TICK", "candle": candle,
-                                    "predictions": engine.predict_future_paths(),
-                                    "metrics": _metrics(signal_tick, session_start)})
+                outcome = engine.tracker.on_tick(mid)
+                tick_msg: dict = {"type": "TICK", "candle": candle,
+                                  "predictions": engine.predict_future_paths(),
+                                  "metrics": _metrics(signal_tick, session_start)}
+                if outcome:
+                    tick_msg["outcome"] = outcome
+                await ws.send_json(tick_msg)
                 if signal_tick % 30 == 0:
                     await ws.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
                     await ws.send_json({"type": "REGIME",  "regime": engine.get_regime()})
@@ -942,9 +1048,13 @@ async def _stream_yahoo(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
         candle = {"time": engine.current_timestamp, "open": active_open,
                   "high": active_high, "low": active_low, "close": price, "volume": 100_000.0}
         signal_tick += 1
-        await ws.send_json({"type": "TICK", "candle": candle,
-                            "predictions": engine.predict_future_paths(),
-                            "metrics": _metrics(signal_tick, session_start)})
+        outcome = engine.tracker.on_tick(price)
+        tick_msg: dict = {"type": "TICK", "candle": candle,
+                          "predictions": engine.predict_future_paths(),
+                          "metrics": _metrics(signal_tick, session_start)}
+        if outcome:
+            tick_msg["outcome"] = outcome
+        await ws.send_json(tick_msg)
         if signal_tick % 15 == 0:
             await ws.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
             await ws.send_json({"type": "REGIME",  "regime": engine.get_regime()})
