@@ -35,10 +35,10 @@ OANDA_STREAM  = f"https://stream-fx{'practice' if _oanda_env == 'practice' else 
 # ── Data-source routing ────────────────────────────────────────────────────────
 BINANCE_SYMBOLS = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
 OANDA_SYMBOLS   = {"EURUSD", "GOLD"}
-YAHOO_SYMBOLS   = {"AAPL"}
+YAHOO_SYMBOLS   = {"AAPL", "NAS100"}
 
 OANDA_INSTRUMENT = {"EURUSD": "EUR_USD", "GOLD": "XAU_USD"}
-YAHOO_TICKER     = {"AAPL": "AAPL"}
+YAHOO_TICKER     = {"AAPL": "AAPL", "NAS100": "^NDX"}
 
 # ── Timeframe config ───────────────────────────────────────────────────────────
 TF_MAP: Dict[str, dict] = {
@@ -77,6 +77,7 @@ ASSET_REGISTRY: Dict[str, AssetConfig] = {
     "EURUSD":  AssetConfig(symbol="EURUSD",  exchange="OANDA",    base_price=1.16200,  volatility=0.0008, tick_size=0.00001),
     "AAPL":    AssetConfig(symbol="AAPL",    exchange="NASDAQ",   base_price=210.0,    volatility=1.5,    tick_size=0.01),
     "GOLD":    AssetConfig(symbol="GOLD",    exchange="OANDA",    base_price=4450.0,   volatility=12.0,   tick_size=0.1),
+    "NAS100":  AssetConfig(symbol="NAS100",  exchange="NASDAQ",   base_price=18500.0,  volatility=120.0,  tick_size=0.01),
 }
 
 
@@ -149,6 +150,25 @@ def _ema(values: List[float], period: int) -> Optional[float]:
     return result
 
 
+def _compute_rsi14(closes: List[float]) -> Optional[float]:
+    """Wilder smoothed RSI-14. Requires at least 15 closes."""
+    if len(closes) < 15:
+        return None
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        gains.append(max(d, 0.0))
+        losses.append(max(-d, 0.0))
+    avg_g = sum(gains[:14]) / 14
+    avg_l = sum(losses[:14]) / 14
+    for i in range(14, len(gains)):
+        avg_g = (avg_g * 13 + gains[i]) / 14
+        avg_l = (avg_l * 13 + losses[i]) / 14
+    if avg_l == 0:
+        return 100.0
+    return round(100.0 - 100.0 / (1.0 + avg_g / avg_l), 2)
+
+
 class FeatureEngine:
     def __init__(self, config: AssetConfig):
         self.config        = config
@@ -206,6 +226,110 @@ class FeatureEngine:
     def ema21(self) -> Optional[float]: return _ema(self.close_history, 21)
     def ema50(self) -> Optional[float]: return _ema(self.close_history, 50)
 
+    def get_swing_structure(self, lookback: int = 30) -> dict:
+        """
+        Pivot high/low analysis → market structure bias.
+        HH+HL = bullish (+1), LH+LL = bearish (-1), mixed = ranging (0).
+        Also returns the most recent swing high/low for structural resistance/support.
+        """
+        n = min(len(self.high_history), len(self.low_history), lookback)
+        if n < 6:
+            return {"bias": 0, "swing_high": None, "swing_low": None}
+
+        highs = self.high_history[-n:]
+        lows  = self.low_history[-n:]
+
+        pivot_highs, pivot_lows = [], []
+        for i in range(2, n - 2):
+            if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]:
+                pivot_highs.append(highs[i])
+            if lows[i] < lows[i-1] and lows[i] < lows[i-2] and lows[i] < lows[i+1] and lows[i] < lows[i+2]:
+                pivot_lows.append(lows[i])
+
+        if len(pivot_highs) < 2 or len(pivot_lows) < 2:
+            mid = (max(highs) + min(lows)) / 2
+            current = self.close_history[-1] if self.close_history else mid
+            return {
+                "bias":       1 if current > mid else -1,
+                "swing_high": max(highs),
+                "swing_low":  min(lows),
+            }
+
+        hh = pivot_highs[-1] > pivot_highs[-2]
+        hl = pivot_lows[-1]  > pivot_lows[-2]
+        lh = pivot_highs[-1] < pivot_highs[-2]
+        ll = pivot_lows[-1]  < pivot_lows[-2]
+
+        if hh and hl:
+            bias = 1
+        elif lh and ll:
+            bias = -1
+        elif hh or hl:
+            bias = 1
+        elif lh or ll:
+            bias = -1
+        else:
+            bias = 0
+
+        return {
+            "bias":       bias,
+            "swing_high": max(pivot_highs[-3:]),
+            "swing_low":  min(pivot_lows[-3:]),
+        }
+
+    def get_nearest_liquidity(self, current_price: float, bias: int, lookback: int = 40) -> Optional[float]:
+        """
+        Find nearest liquidity pool (equal highs = BSL, equal lows = SSL).
+        Bullish bias → targets equal highs above; bearish → equal lows below.
+        Two levels within 0.15% of each other qualify as an equal level.
+        """
+        if not self.high_history or not self.low_history:
+            return None
+
+        n   = min(len(self.high_history), lookback)
+        tol = current_price * 0.0015
+
+        if bias >= 0:
+            levels = sorted([h for h in self.high_history[-n:] if h > current_price])
+            for i in range(len(levels) - 1):
+                if abs(levels[i+1] - levels[i]) <= tol:
+                    return (levels[i] + levels[i+1]) / 2
+            return levels[0] if levels else None
+        else:
+            levels = sorted([l for l in self.low_history[-n:] if l < current_price], reverse=True)
+            for i in range(len(levels) - 1):
+                if abs(levels[i] - levels[i+1]) <= tol:
+                    return (levels[i] + levels[i+1]) / 2
+            return levels[0] if levels else None
+
+    def get_open_fvg(self, current_price: float, lookback: int = 50) -> Optional[float]:
+        """
+        Detect nearest open Fair Value Gap (3-bar imbalance).
+        Bullish FVG: bar[i].low > bar[i-2].high.
+        Bearish FVG: bar[i].high < bar[i-2].low.
+        Returns midpoint of nearest unmitigated gap, or None.
+        """
+        n = min(len(self.high_history), len(self.low_history), lookback)
+        if n < 3:
+            return None
+
+        highs = self.high_history[-n:]
+        lows  = self.low_history[-n:]
+        fvgs  = []
+
+        for i in range(2, n):
+            if lows[i] > highs[i-2]:
+                mid = (lows[i] + highs[i-2]) / 2
+                fvgs.append((mid, abs(mid - current_price)))
+            elif highs[i] < lows[i-2]:
+                mid = (highs[i] + lows[i-2]) / 2
+                fvgs.append((mid, abs(mid - current_price)))
+
+        if not fvgs:
+            return None
+        fvgs.sort(key=lambda x: x[1])
+        return fvgs[0][0]
+
     def signal_direction(self) -> str:
         e9  = self.ema9()
         e21 = self.ema21()
@@ -256,6 +380,32 @@ class FeatureEngine:
 
         funding = _funding_cache.get(symbol, {"label": "N/A", "type": "neutral"})
 
+        current_price = self.close_history[-1] if self.close_history else self.config.base_price
+        ms      = self.get_swing_structure()
+        fvg_mid = self.get_open_fvg(current_price)
+        liq_lvl = self.get_nearest_liquidity(current_price, ms["bias"])
+        bar_rng = (
+            (self.high_history[-1] - self.low_history[-1])
+            if self.high_history and self.low_history else self.atr
+        )
+
+        raw = {
+            "cvd":              self.cvd,
+            "ofi":              round(self.ofi, 6),
+            "atr":              round(self.atr, 6),
+            "atr_pct":          round(self.atr / max(current_price, 1e-10) * 100, 4),
+            "zscore":           round(zscore, 4),
+            "regime_label":     regime_lbl,
+            "regime_confidence": regime.get("confidence", 65),
+            "swing_high":       ms["swing_high"],
+            "swing_low":        ms["swing_low"],
+            "fvg_mid":          fvg_mid,
+            "liq_level":        liq_lvl,
+            "swing_bias":       ms["bias"],
+            "bar_range":        round(bar_rng, 6),
+            "current_price":    round(current_price, 6),
+        }
+
         return {
             "market_intel": [
                 {"label": "CVD Trend",        "value": cvd_trend,   "type": cvd_type},
@@ -273,6 +423,7 @@ class FeatureEngine:
                 {"label": "ATR",               "value": f"{self.atr:.2f}", "type": "neutral"},
                 {"label": "Funding Rate",      "value": funding["label"], "type": funding["type"]},
             ],
+            "raw": raw,
         }
 
 
@@ -341,25 +492,78 @@ class LivePredictor:
         return {"time": self.current_timestamp, "price": self.current_price, "volume": volume}
 
     def predict_future_paths(self, horizon: int = 8) -> List[dict]:
-        last          = self.current_price
-        zscore        = self.feature_engine.z_score_volatility()
-        ofi_bias      = self.feature_engine.ofi * self.config.volatility * 0.5
-        momentum_bias = zscore * self.config.volatility * 0.3
-        bs            = self.bar_seconds
-        predictions   = []
+        last = self.current_price
+        atr  = max(self.feature_engine.atr, self.config.volatility * 0.5)
+        bs   = self.bar_seconds
+        d    = self._decimals()
+
+        # Market structure: HH/HL vs LH/LL pivot analysis
+        ms         = self.feature_engine.get_swing_structure()
+        bias       = ms["bias"]           # +1 bull, -1 bear, 0 ranging
+        swing_high = ms["swing_high"]
+        swing_low  = ms["swing_low"]
+
+        # EMA alignment blended with pivot bias
+        e9, e21 = self.feature_engine.ema9(), self.feature_engine.ema21()
+        ema_dir = (1 if (e9 and e21 and e9 > e21) else -1) if (e9 and e21) else 0
+        struct_dir = bias * 0.6 + ema_dir * 0.4  # weighted directional score
+
+        # ICT attractors
+        liq_target = self.feature_engine.get_nearest_liquidity(last, bias)
+        fvg_mid    = self.feature_engine.get_open_fvg(last)
+
+        projected  = last
+        predictions = []
+
         for step in range(1, horizon + 1):
-            future_time  = self.current_timestamp + (step * bs)
-            uncertainty  = self.config.volatility * math.sqrt(step) * 1.2
-            struct_bias  = (ofi_bias + momentum_bias) * step * 0.15
-            median = last + struct_bias
-            upper  = median + uncertainty * 1.3
-            lower  = median - uncertainty * 1.3
+            future_time = self.current_timestamp + (step * bs)
+
+            # Structural drift per step: small, consistent push in structure direction
+            step_drift = struct_dir * atr * 0.08
+
+            # Liquidity pull: proportional to remaining distance, capped at 0.15 ATR
+            liq_pull = 0.0
+            if liq_target is not None:
+                dist     = liq_target - projected
+                liq_pull = math.copysign(min(abs(dist) * 0.12, atr * 0.15), dist)
+
+            # FVG magnet: weaker secondary pull
+            fvg_pull = 0.0
+            if fvg_mid is not None:
+                dist     = fvg_mid - projected
+                fvg_pull = math.copysign(min(abs(dist) * 0.08, atr * 0.10), dist)
+
+            median = projected + step_drift + liq_pull * 0.5 + fvg_pull * 0.3
+
+            # Structural deceleration at swing levels (price slows, doesn't teleport through)
+            if swing_high and median > swing_high:
+                median = swing_high + (median - swing_high) * 0.25
+            if swing_low and median < swing_low:
+                median = swing_low  - (swing_low - median) * 0.25
+
+            # ATR-based uncertainty expands with sqrt(step)
+            uncertainty = atr * math.sqrt(step) * 0.9
+
+            # Asymmetric bands: trending markets give more room in direction of trend
+            if struct_dir > 0.3:
+                upper = median + uncertainty * 1.1
+                lower = median - uncertainty * 0.65
+            elif struct_dir < -0.3:
+                upper = median + uncertainty * 0.65
+                lower = median - uncertainty * 1.1
+            else:
+                upper = median + uncertainty * 0.88
+                lower = median - uncertainty * 0.88
+
+            floor = last * 0.5
             predictions.append({
                 "time":   future_time,
-                "upper":  round(max(upper,  last * 0.5), self._decimals()),
-                "median": round(max(median, last * 0.5), self._decimals()),
-                "lower":  round(max(lower,  last * 0.5), self._decimals()),
+                "upper":  round(max(upper,  floor), d),
+                "median": round(max(median, floor), d),
+                "lower":  round(max(lower,  floor), d),
             })
+            projected = median  # chain: next step walks from this step's projection
+
         return predictions
 
     def get_ai_signal(self) -> dict:
@@ -408,14 +612,9 @@ class LivePredictor:
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 def _metrics(signal_tick: int, session_start: float) -> dict:
-    elapsed = time.time() - session_start
     return {
-        "tick_count":            signal_tick,
-        "elapsed_secs":          int(elapsed),
-        "rows_ingested":         int(12_400_000 + elapsed * 1_200),
-        "perf_pct":              round(min(28.0, 14.7 + (elapsed / 7_200) * 3.0), 1),
-        "directional_accuracy":  round(min(80.0, 65.0 + (signal_tick / 800) * 5.0), 1),
-        "last_retrain_secs_ago": 8_100 + int(elapsed),
+        "tick_count":   signal_tick,
+        "elapsed_secs": int(time.time() - session_start),
     }
 
 
@@ -798,6 +997,52 @@ async def _stream_simulation(ws: WebSocket, symbol: str, engine: LivePredictor, 
 
 
 # ── HTTP endpoints ─────────────────────────────────────────────────────────────
+@app.get("/api/scan")
+async def scan_market():
+    """RSI-14, signal direction, regime, ATR%, price for every symbol — parallel fetch."""
+    async def _scan_one(symbol: str) -> dict:
+        cfg = ASSET_REGISTRY[symbol]
+        try:
+            if symbol in BINANCE_SYMBOLS:
+                bars = await _fetch_binance_klines(symbol, "1h", 60)
+            elif symbol in OANDA_SYMBOLS:
+                bars = await _fetch_oanda_candles(OANDA_INSTRUMENT[symbol], "H1", 60)
+            elif symbol in YAHOO_SYMBOLS:
+                bars = await _fetch_yahoo_candles(YAHOO_TICKER[symbol], "1h", "7d")
+                bars = bars[-60:]
+            else:
+                return {"symbol": symbol, "error": "unknown source"}
+
+            if not bars:
+                return {"symbol": symbol, "error": "no data"}
+
+            closes = [b["close"] for b in bars]
+            fe = FeatureEngine(cfg)
+            for b in bars[-50:]:
+                d = 1 if b["close"] >= b["open"] else -1
+                fe.update(b["close"], b.get("volume", 10_000.0), d,
+                          high=b.get("high"), low=b.get("low"))
+
+            rd = MarketRegimeDetector()
+            for b in bars[-20:]:
+                rd.update(b["close"], b["high"] - b["low"])
+
+            price = closes[-1]
+            return {
+                "symbol":    symbol,
+                "price":     round(price, 6),
+                "rsi14":     _compute_rsi14(closes),
+                "direction": fe.signal_direction(),
+                "regime":    rd.detect()["label"],
+                "atr_pct":   round(fe.atr / max(price, 1e-10) * 100, 4),
+            }
+        except Exception as e:
+            return {"symbol": symbol, "error": str(e)}
+
+    results = await asyncio.gather(*[_scan_one(s) for s in ASSET_REGISTRY.keys()])
+    return {"symbols": list(results), "ts": int(time.time())}
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "engine": "Dr. Strange v3.0.0",

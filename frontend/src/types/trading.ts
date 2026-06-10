@@ -37,25 +37,10 @@ export interface MarketRegime {
   confidence: number;
 }
 
-export interface ModelWeight {
-  name: string;
-  weight: number;
-}
-
-export interface LearningLog {
-  time: string;
-  event: string;
-  value: string;
-  type: 'positive' | 'negative' | 'neutral';
-}
-
+// Real-only metrics — no fabricated fields
 export interface Metrics {
   tick_count: number;
   elapsed_secs: number;
-  rows_ingested: number;
-  perf_pct: number;
-  directional_accuracy: number;
-  last_retrain_secs_ago: number;
 }
 
 export interface IntelRow {
@@ -64,9 +49,28 @@ export interface IntelRow {
   type: 'positive' | 'negative' | 'neutral' | 'warning';
 }
 
+// Raw numeric payload attached to every INTEL message
+export interface RawIntel {
+  cvd: number;
+  ofi: number;
+  atr: number;
+  atr_pct: number;
+  zscore: number;
+  regime_label: string;
+  regime_confidence: number;
+  swing_high: number | null;
+  swing_low: number | null;
+  fvg_mid: number | null;
+  liq_level: number | null;
+  swing_bias: number;
+  bar_range: number;
+  current_price: number;
+}
+
 export interface MarketIntel {
   market_intel: IntelRow[];
   liquidity: IntelRow[];
+  raw?: RawIntel;
 }
 
 export interface WsMessage {
@@ -78,6 +82,22 @@ export interface WsMessage {
   regime?: MarketRegime;
   metrics?: Metrics;
   intel?: MarketIntel;
+}
+
+// /api/scan response types
+export interface ScanEntry {
+  symbol: string;
+  price?: number;
+  rsi14?: number | null;
+  direction?: 'LONG' | 'SHORT';
+  regime?: string;
+  atr_pct?: number;
+  error?: string;
+}
+
+export interface ScanResult {
+  symbols: ScanEntry[];
+  ts: number;
 }
 
 export interface AssetConfig {
@@ -94,13 +114,15 @@ export const ASSET_CONFIGS: Record<string, AssetConfig> = {
   EURUSD:  { symbol: 'EURUSD',  exchange: 'OANDA',   timeframe: '1h', basePrice: 1.08245 },
   AAPL:    { symbol: 'AAPL',    exchange: 'NASDAQ',  timeframe: '1h', basePrice: 193.42 },
   GOLD:    { symbol: 'GOLD',    exchange: 'COMEX',   timeframe: '1h', basePrice: 2357.80 },
+  NAS100:  { symbol: 'NAS100',  exchange: 'NASDAQ',  timeframe: '1h', basePrice: 18500 },
 };
 
 export const TICKER_DATA: AssetTicker[] = [
-  { symbol: 'BTCUSDT', price: 64892.1, change: 883.4, changePct: 1.35 },
-  { symbol: 'ETHUSDT', price: 3512.6,  change: 75.8,  changePct: 2.21 },
-  { symbol: 'SOLUSDT', price: 152.61,  change: 5.12,  changePct: 3.52 },
+  { symbol: 'BTCUSDT', price: 64892.1, change: 883.4,  changePct: 1.35 },
+  { symbol: 'ETHUSDT', price: 3512.6,  change: 75.8,   changePct: 2.21 },
+  { symbol: 'SOLUSDT', price: 152.61,  change: 5.12,   changePct: 3.52 },
   { symbol: 'EURUSD',  price: 1.08245, change: 0.0012, changePct: 0.11 },
-  { symbol: 'AAPL',    price: 193.42,  change: -0.45, changePct: -0.23 },
-  { symbol: 'GOLD',    price: 2357.80, change: 8.92,  changePct: 0.38 },
+  { symbol: 'AAPL',    price: 193.42,  change: -0.45,  changePct: -0.23 },
+  { symbol: 'GOLD',    price: 2357.80, change: 8.92,   changePct: 0.38 },
+  { symbol: 'NAS100',  price: 18500.0, change: 120.0,  changePct: 0.65 },
 ];

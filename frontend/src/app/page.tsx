@@ -62,9 +62,11 @@ export default function Home() {
 
       <div className="flex-shrink-0 border-t border-[#2B2F36]" style={{ background: '#0B0E11' }}>
         <BottomPanels
-          confidence={signal?.confidence}
+          signal={signal ?? undefined}
           regime={regime ?? undefined}
-          metrics={metrics ?? undefined}
+          intel={intel ?? undefined}
+          currentCandle={currentCandle}
+          selectedSymbol={selectedSymbol}
         />
       </div>
     </div>
