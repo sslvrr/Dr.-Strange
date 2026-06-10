@@ -32,6 +32,9 @@ _oanda_env    = os.getenv("OANDA_ENV", "practice")
 OANDA_REST    = f"https://api-fx{'practice' if _oanda_env == 'practice' else 'trade'}.oanda.com/v3"
 OANDA_STREAM  = f"https://stream-fx{'practice' if _oanda_env == 'practice' else 'trade'}.oanda.com/v3"
 
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
 # ── Data-source routing ────────────────────────────────────────────────────────
 BINANCE_SYMBOLS = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
 OANDA_SYMBOLS   = {"EURUSD", "GOLD"}
@@ -50,7 +53,8 @@ TF_MAP: Dict[str, dict] = {
     "D":   {"binance": "1d",  "oanda": "D",   "yahoo_iv": "1d",  "yahoo_rng": "1y",  "secs": 86400},
     "W":   {"binance": "1w",  "oanda": "W",   "yahoo_iv": "1wk", "yahoo_rng": "5y",  "secs": 604800},
 }
-VALID_TFS = set(TF_MAP.keys())
+VALID_TFS   = set(TF_MAP.keys())
+SECS_TO_TF  = {v["secs"]: k for k, v in TF_MAP.items()}  # e.g. 3600 → "1h"
 
 # ── FastAPI ────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Dr. Strange — QuantPredict Engine", version="3.0.0")
@@ -59,6 +63,103 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
+
+
+# ── Telegram alerts ───────────────────────────────────────────────────────────
+_tg_last_direction: Dict[str, str] = {}   # symbol → last alerted direction
+_tg_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+
+async def _tg(text: str):
+    """Fire-and-forget Telegram message. Silently swallows errors."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            await c.post(_tg_url, data={
+                "chat_id":    TELEGRAM_CHAT_ID,
+                "text":       text,
+                "parse_mode": "HTML",
+            })
+    except Exception:
+        pass
+
+
+def _fmt_price(v: float, decimals: int) -> str:
+    return f"{v:,.{decimals}f}"
+
+
+async def _alert_signal(signal: dict, symbol: str, timeframe: str):
+    """Send a Telegram alert when signal direction changes for this symbol."""
+    direction = signal["direction"]
+    key = f"{symbol}:{timeframe}"
+    if _tg_last_direction.get(key) == direction:
+        return
+    _tg_last_direction[key] = direction
+
+    d       = len(str(signal["entryZone"][0]).split(".")[-1]) if "." in str(signal["entryZone"][0]) else 0
+    arrow   = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
+    sym_tag = symbol.replace("USDT", "")
+    entry   = f"{_fmt_price(signal['entryZone'][0], d)} – {_fmt_price(signal['entryZone'][1], d)}"
+    tp1     = f"{_fmt_price(signal['takeProfit1'][0], d)} – {_fmt_price(signal['takeProfit1'][1], d)}"
+    tp2     = f"{_fmt_price(signal['takeProfit2'][0], d)} – {_fmt_price(signal['takeProfit2'][1], d)}"
+    sl      = f"{_fmt_price(signal['stopLoss'][0], d)} – {_fmt_price(signal['stopLoss'][1], d)}"
+
+    text = (
+        f"<b>🔮 Dr. Strange — {arrow}</b>\n"
+        f"<b>{sym_tag}</b> · {timeframe.upper()}\n\n"
+        f"📥 Entry:  <code>{entry}</code>\n"
+        f"🎯 TP1:   <code>{tp1}</code>\n"
+        f"🎯 TP2:   <code>{tp2}</code>\n"
+        f"🛑 SL:    <code>{sl}</code>\n\n"
+        f"Confidence: <b>{signal['confidence']}%</b> · R:R {signal['riskReward']}\n"
+        f"<i>{signal['validUntil']}</i>"
+    )
+    await _tg(text)
+
+
+async def _alert_outcome(outcome: dict):
+    """Send a Telegram alert when a prediction hits TP or SL."""
+    o   = outcome["outcome"]
+    if o == "EXPIRED":
+        return
+    sym = outcome["symbol"].replace("USDT", "")
+    d   = len(str(outcome["entry"]).split(".")[-1]) if "." in str(outcome["entry"]) else 0
+
+    if o == "TP2_WIN":
+        icon, label = "✅✅", "TP2 HIT"
+    elif o == "TP1_WIN":
+        icon, label = "✅", "TP1 HIT"
+    else:
+        icon, label = "❌", "SL HIT"
+
+    entry_fmt = _fmt_price(outcome["entry"], d)
+    close_fmt = _fmt_price(outcome["close_price"], d)
+    pnl_pct   = (outcome["close_price"] - outcome["entry"]) / max(outcome["entry"], 1e-10) * 100
+    if outcome["direction"] == "SHORT":
+        pnl_pct = -pnl_pct
+    stats = outcome.get("stats", {})
+    wr    = stats.get("win_rate", 0)
+
+    text = (
+        f"<b>{icon} Dr. Strange — {label}</b>\n"
+        f"<b>{sym}</b> · {outcome['direction']}\n\n"
+        f"Entry:  <code>{entry_fmt}</code>\n"
+        f"Close:  <code>{close_fmt}</code>  ({pnl_pct:+.2f}%)\n\n"
+        f"Win rate ({sym}): <b>{wr}%</b> "
+        f"({stats.get('tp1_wins',0)}W / {stats.get('losses',0)}L)"
+    )
+    await _tg(text)
+
+
+async def _ws_signal(ws: "WebSocket", engine: "LivePredictor", tf_cfg: dict, alert: bool = False):
+    """Send SIGNAL message; optionally fire Telegram if direction changed."""
+    sig = engine.get_ai_signal()
+    await ws.send_json({"type": "SIGNAL", "signal": sig})
+    if alert:
+        tf_label = SECS_TO_TF.get(tf_cfg["secs"], "1h")
+        asyncio.create_task(_alert_signal(sig, engine.config.symbol, tf_label))
+    return sig
 
 
 # ── Asset registry ─────────────────────────────────────────────────────────────
@@ -761,7 +862,7 @@ async def _stream_binance(ws: WebSocket, symbol: str, engine: LivePredictor, tf_
 
     _seed_engine(engine, history)
     await ws.send_json({"type": "HISTORY", "data": history})
-    await ws.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
+    await _ws_signal(ws, engine, tf_cfg)
     await ws.send_json({"type": "REGIME", "regime": engine.get_regime()})
     await ws.send_json({"type": "INTEL",  "intel":  engine.get_intel()})
 
@@ -808,11 +909,12 @@ async def _stream_binance(ws: WebSocket, symbol: str, engine: LivePredictor, tf_
                               "metrics": _metrics(signal_tick, session_start)}
             if outcome:
                 tick_msg["outcome"] = outcome
+                asyncio.create_task(_alert_outcome(outcome))
             await ws.send_json(tick_msg)
 
             if signal_tick % 30 == 0:
                 await _fetch_funding_rates()
-                await ws.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
+                await _ws_signal(ws, engine, tf_cfg, alert=True)
                 await ws.send_json({"type": "REGIME",  "regime": engine.get_regime()})
                 await ws.send_json({"type": "INTEL",   "intel":  engine.get_intel()})
 
@@ -858,7 +960,7 @@ async def _stream_oanda(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
 
     _seed_engine(engine, history)
     await ws.send_json({"type": "HISTORY", "data": history})
-    await ws.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
+    await _ws_signal(ws, engine, tf_cfg)
     await ws.send_json({"type": "REGIME", "regime": engine.get_regime()})
     await ws.send_json({"type": "INTEL",  "intel":  engine.get_intel()})
 
@@ -929,9 +1031,10 @@ async def _stream_oanda(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
                                   "metrics": _metrics(signal_tick, session_start)}
                 if outcome:
                     tick_msg["outcome"] = outcome
+                    asyncio.create_task(_alert_outcome(outcome))
                 await ws.send_json(tick_msg)
                 if signal_tick % 30 == 0:
-                    await ws.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
+                    await _ws_signal(ws, engine, tf_cfg, alert=True)
                     await ws.send_json({"type": "REGIME",  "regime": engine.get_regime()})
                     await ws.send_json({"type": "INTEL",   "intel":  engine.get_intel()})
 
@@ -1010,7 +1113,7 @@ async def _stream_yahoo(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
 
     _seed_engine(engine, history)
     await ws.send_json({"type": "HISTORY", "data": history})
-    await ws.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
+    await _ws_signal(ws, engine, tf_cfg)
     await ws.send_json({"type": "REGIME", "regime": engine.get_regime()})
     await ws.send_json({"type": "INTEL",  "intel":  engine.get_intel()})
 
@@ -1054,9 +1157,10 @@ async def _stream_yahoo(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
                           "metrics": _metrics(signal_tick, session_start)}
         if outcome:
             tick_msg["outcome"] = outcome
+            asyncio.create_task(_alert_outcome(outcome))
         await ws.send_json(tick_msg)
         if signal_tick % 15 == 0:
-            await ws.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
+            await _ws_signal(ws, engine, tf_cfg, alert=True)
             await ws.send_json({"type": "REGIME",  "regime": engine.get_regime()})
             await ws.send_json({"type": "INTEL",   "intel":  engine.get_intel()})
 
@@ -1069,7 +1173,7 @@ async def _stream_simulation(ws: WebSocket, symbol: str, engine: LivePredictor, 
     bar_secs = tf_cfg["secs"]
     history  = engine.generate_historical_data(120)
     await ws.send_json({"type": "HISTORY", "data": history})
-    await ws.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
+    await _ws_signal(ws, engine, tf_cfg)
     await ws.send_json({"type": "REGIME", "regime": engine.get_regime()})
     await ws.send_json({"type": "INTEL",  "intel":  engine.get_intel()})
 
@@ -1100,7 +1204,7 @@ async def _stream_simulation(ws: WebSocket, symbol: str, engine: LivePredictor, 
                             "predictions": engine.predict_future_paths(),
                             "metrics": _metrics(signal_tick, session_start)})
         if signal_tick % 30 == 0:
-            await ws.send_json({"type": "SIGNAL", "signal": engine.get_ai_signal()})
+            await _ws_signal(ws, engine, tf_cfg, alert=True)
             await ws.send_json({"type": "REGIME",  "regime": engine.get_regime()})
             await ws.send_json({"type": "INTEL",   "intel":  engine.get_intel()})
         await asyncio.sleep(1.0)
