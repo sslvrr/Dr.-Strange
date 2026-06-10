@@ -340,7 +340,7 @@ function SessionPanel() {
             {offHours ? '● ACTIVE' : '○ —'}
           </div>
           <div className="text-[7px] text-[#5E6673] mt-0.5">
-            {now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC', hour12: false })} UTC
+            {now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York', hour12: false })} ET
           </div>
         </div>
       </div>
@@ -386,7 +386,7 @@ function SignalHistoryPanel({
       lastDirRef.current = signal.direction;
       const dir = signal.direction as 'LONG' | 'SHORT';
       const t = new Date();
-      const ts = `${String(t.getUTCHours()).padStart(2,'0')}:${String(t.getUTCMinutes()).padStart(2,'0')} UTC`;
+      const ts = t.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' }) + ' ET';
       setLog(prev => {
         const next = [{ time: ts, direction: dir, price: currentCandle.close, confidence: signal.confidence }, ...prev].slice(0, 8);
         onLogChange?.(next);
