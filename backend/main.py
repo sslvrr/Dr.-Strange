@@ -651,6 +651,17 @@ class LivePredictor:
         self.feature_engine    = FeatureEngine(config)
         self.regime_detector   = MarketRegimeDetector()
         self.tracker           = PredictionTracker(config.symbol)
+        # Confirmed direction is only updated at bar close — never mid-bar
+        self._confirmed_direction:   str = "LONG"
+        self._confirmed_confidence:  int = 55
+        self._confirmed_bar_ts:      int = 0    # timestamp of last confirmed bar
+
+    def confirm_bar_close(self):
+        """Lock signal direction from the just-closed bar. Call when a bar closes."""
+        regime = self.regime_detector.detect()
+        self._confirmed_direction  = self.feature_engine.signal_direction()
+        self._confirmed_confidence = self.feature_engine.signal_confidence(regime["label"])
+        self._confirmed_bar_ts     = self.current_timestamp
 
     def _decimals(self) -> int:
         ts = self.config.tick_size
@@ -773,12 +784,12 @@ class LivePredictor:
         return predictions
 
     def get_ai_signal(self) -> dict:
-        p         = self.current_price
-        atr       = max(self.feature_engine.atr, self.config.volatility * 0.5)
-        regime    = self.regime_detector.detect()
-        direction = self.feature_engine.signal_direction()
-        confidence = self.feature_engine.signal_confidence(regime["label"])
-        d         = self._decimals()
+        p          = self.current_price
+        atr        = max(self.feature_engine.atr, self.config.volatility * 0.5)
+        regime     = self.regime_detector.detect()
+        direction  = self._confirmed_direction    # bar-close confirmed only
+        confidence = self._confirmed_confidence   # bar-close confirmed only
+        d          = self._decimals()
 
         if direction == "LONG":
             entry_lo = round(p - atr * 0.15, d); entry_hi = round(p + atr * 0.10, d)
@@ -839,6 +850,8 @@ def _seed_engine(engine: LivePredictor, history: List[dict]):
             high=bar.get("high"), low=bar.get("low"),
         )
         engine.regime_detector.update(bar["close"], bar["high"] - bar["low"])
+    # Seed confirmed direction from the last closed historical bar
+    engine.confirm_bar_close()
 
 
 def _bar_start(ts: float, bar_secs: int) -> int:
@@ -903,6 +916,10 @@ async def _stream_binance(ws: WebSocket, symbol: str, engine: LivePredictor, tf_
                 high=round(float(k["h"]), d), low=round(float(k["l"]), d),
             )
             engine.regime_detector.update(close_p, abs(close_p - float(k["o"])))
+
+            # Confirm direction only on bar close (k["x"] == True)
+            if k.get("x"):
+                engine.confirm_bar_close()
 
             candle = {
                 "time":   engine.current_timestamp,
@@ -1018,6 +1035,8 @@ async def _stream_oanda(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
 
                 now_bar = _bar_start(now, bar_secs)
                 if now_bar > engine.current_timestamp:
+                    # Previous bar just closed — confirm direction before advancing
+                    engine.confirm_bar_close()
                     engine.current_timestamp = now_bar
                     active_open = mid
                     active_high = mid
@@ -1144,6 +1163,7 @@ async def _stream_yahoo(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
 
         now_bar = _bar_start(time.time(), bar_secs)
         if now_bar > engine.current_timestamp:
+            engine.confirm_bar_close()
             engine.current_timestamp = now_bar
             active_open = price
             active_high = price
@@ -1196,6 +1216,7 @@ async def _stream_simulation(ws: WebSocket, symbol: str, engine: LivePredictor, 
     while True:
         now_bar = _bar_start(time.time(), bar_secs)
         if now_bar > engine.current_timestamp:
+            engine.confirm_bar_close()
             engine.current_timestamp = now_bar
             active_open = engine.current_price
             active_high = engine.current_price
