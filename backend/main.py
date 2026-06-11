@@ -542,10 +542,13 @@ class FeatureEngine:
 class PredictionTracker:
     """Tracks each AI signal from open to TP/SL resolution."""
 
-    MAX_TICKS = 200  # expire after ~200 ticks without resolution
+    # 8 bars of wall-clock time, capped at 8 hours so daily/weekly don't run forever.
+    # 1 tick ≈ 1 second (throttled in stream functions).
+    _MAX_WALL_SECS = 8 * 3600  # 8h ceiling
 
-    def __init__(self, symbol: str):
-        self.symbol  = symbol
+    def __init__(self, symbol: str, bar_seconds: int = 60):
+        self.symbol    = symbol
+        self.max_ticks = min(8 * bar_seconds, self._MAX_WALL_SECS)
         self.pending: Optional[dict] = None
         self.tp1_wins  = 0
         self.tp2_wins  = 0
@@ -586,7 +589,7 @@ class PredictionTracker:
             elif price <= p["tp1_mid"]: hit = "TP1_WIN"
             elif price >= p["sl_mid"]:  hit = "LOSS"
 
-        if hit is None and p["ticks"] >= self.MAX_TICKS:
+        if hit is None and p["ticks"] >= self.max_ticks:
             hit = "EXPIRED"
 
         if hit:
@@ -650,7 +653,7 @@ class LivePredictor:
         self.current_timestamp = int(time.time() // bar_seconds) * bar_seconds
         self.feature_engine    = FeatureEngine(config)
         self.regime_detector   = MarketRegimeDetector()
-        self.tracker           = PredictionTracker(config.symbol)
+        self.tracker           = PredictionTracker(config.symbol, bar_seconds)
         # Confirmed direction is only updated at bar close — never mid-bar
         self._confirmed_direction:   str = "LONG"
         self._confirmed_confidence:  int = 55
@@ -876,15 +879,17 @@ async def _stream_binance(ws: WebSocket, symbol: str, engine: LivePredictor, tf_
     interval = tf_cfg["binance"]
     bar_secs = tf_cfg["secs"]
 
+    simulated = False
     try:
         history = await _fetch_binance_klines(symbol, interval)
         print(f"[Binance] {symbol}/{interval}: {len(history)} klines", flush=True)
     except Exception as e:
         print(f"[Binance] {symbol} REST failed: {e} — simulation", flush=True)
         history = engine.generate_historical_data(120)
+        simulated = True
 
     _seed_engine(engine, history)
-    await ws.send_json({"type": "HISTORY", "data": history})
+    await ws.send_json({"type": "HISTORY", "data": history, "simulated": simulated})
     await _ws_signal(ws, engine, tf_cfg)
     await ws.send_json({"type": "REGIME", "regime": engine.get_regime()})
     await ws.send_json({"type": "INTEL",  "intel":  engine.get_intel()})
@@ -978,15 +983,17 @@ async def _stream_oanda(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
     granularity = tf_cfg["oanda"]
     bar_secs    = tf_cfg["secs"]
 
+    simulated = False
     try:
         history = await _fetch_oanda_candles(instrument, granularity)
         print(f"[OANDA] {instrument}/{granularity}: {len(history)} candles", flush=True)
     except Exception as e:
         print(f"[OANDA] {instrument} REST failed: {e} — simulation", flush=True)
         history = engine.generate_historical_data(120)
+        simulated = True
 
     _seed_engine(engine, history)
-    await ws.send_json({"type": "HISTORY", "data": history})
+    await ws.send_json({"type": "HISTORY", "data": history, "simulated": simulated})
     await _ws_signal(ws, engine, tf_cfg)
     await ws.send_json({"type": "REGIME", "regime": engine.get_regime()})
     await ws.send_json({"type": "INTEL",  "intel":  engine.get_intel()})
@@ -1132,6 +1139,7 @@ async def _stream_yahoo(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
     range_   = tf_cfg["yahoo_rng"]
     bar_secs = tf_cfg["secs"]
 
+    simulated = False
     try:
         history = await _fetch_yahoo_candles(ticker, interval, range_)
         history = history[-120:]
@@ -1139,9 +1147,10 @@ async def _stream_yahoo(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
     except Exception as e:
         print(f"[Yahoo] {ticker} failed: {e} — simulation", flush=True)
         history = engine.generate_historical_data(120)
+        simulated = True
 
     _seed_engine(engine, history)
-    await ws.send_json({"type": "HISTORY", "data": history})
+    await ws.send_json({"type": "HISTORY", "data": history, "simulated": simulated})
     await _ws_signal(ws, engine, tf_cfg)
     await ws.send_json({"type": "REGIME", "regime": engine.get_regime()})
     await ws.send_json({"type": "INTEL",  "intel":  engine.get_intel()})

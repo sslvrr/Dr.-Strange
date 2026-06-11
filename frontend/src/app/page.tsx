@@ -19,7 +19,7 @@ export default function Home() {
   const [showPredictions, setShowPredictions]   = useState(false);
 
   const config = ASSET_CONFIGS[selectedSymbol];
-  const { history, currentCandle, predictions, signal, regime, intel, status, outcomes } =
+  const { history, currentCandle, predictions, signal, regime, intel, status, simulated, outcomes } =
     useAssetStream(selectedSymbol, timeframe);
 
   useEffect(() => {
@@ -41,6 +41,12 @@ export default function Home() {
 
   return (
     <div className="flex flex-col" style={{ height: '100vh', overflow: 'hidden', background: '#0B0E11' }}>
+      {simulated && (
+        <div style={{ background: '#B7791F', color: '#fff', textAlign: 'center', padding: '4px 0', fontSize: 12, fontWeight: 600, letterSpacing: '0.05em' }}>
+          ⚠ SIMULATION MODE — Exchange REST feed unavailable. Chart data is synthetic and not suitable for trading decisions.
+        </div>
+      )}
+
       <TopNav
         selectedSymbol={selectedSymbol}
         onSelectSymbol={setSelectedSymbol}

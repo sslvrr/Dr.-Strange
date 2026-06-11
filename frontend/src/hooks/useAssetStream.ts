@@ -29,6 +29,7 @@ interface StreamState {
   metrics: Metrics | null;
   intel: MarketIntel | null;
   status: ConnectionStatus;
+  simulated: boolean;
 }
 
 // Outcomes are stored separately so they persist across symbol switches
@@ -43,7 +44,7 @@ export function useAssetStream(symbol: string, timeframe: string = '1h') {
   const [state, setState] = useState<StreamState>({
     history: [], currentCandle: null, predictions: [],
     signal: null, regime: null, metrics: null, intel: null,
-    status: 'connecting',
+    status: 'connecting', simulated: false,
   });
 
   const [outcomes, setOutcomes] = useState<PredictionOutcome[]>(() => {
@@ -91,7 +92,7 @@ export function useAssetStream(symbol: string, timeframe: string = '1h') {
       try {
         const payload: WsMessage = JSON.parse(event.data);
         if (payload.type === 'HISTORY' && payload.data) {
-          setState((s) => ({ ...s, history: payload.data!, currentCandle: null, predictions: [] }));
+          setState((s) => ({ ...s, history: payload.data!, currentCandle: null, predictions: [], simulated: !!(payload as any).simulated }));
         } else if (payload.type === 'TICK') {
           if (payload.outcome) addOutcome(payload.outcome);
           setState((s) => ({
@@ -133,7 +134,7 @@ export function useAssetStream(symbol: string, timeframe: string = '1h') {
       setState((s) => ({
         ...s,
         history: [], currentCandle: null, predictions: [],
-        signal: null, regime: null, intel: null,
+        signal: null, regime: null, intel: null, simulated: false,
       }));
     }
   }, [symbol, timeframe]);
