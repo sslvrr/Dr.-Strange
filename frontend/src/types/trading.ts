@@ -112,6 +112,38 @@ export interface PredictionOutcome {
   stats: PredictionStats;
 }
 
+// Learning system types
+export interface LearningStatus {
+  samples: number;
+  samples_needed: number;
+  learning_active: boolean;
+  last_review_ts: number | null;
+  next_review_ts: number;
+  adjustment_count: number;
+}
+
+export interface LearningAdjustment {
+  symbol: string;
+  regime: string;
+  multiplier: number;
+  sample_n: number;
+  win_rate: number;
+}
+
+export interface FeatureInsight {
+  feature: string;
+  note: string;
+}
+
+export interface LearningReport {
+  generated_at: number;
+  samples_used: number;
+  adjustments: LearningAdjustment[];
+  feature_insights: FeatureInsight[];
+  summary: string;
+  status: string;
+}
+
 // /api/scan response types
 export interface ScanEntry {
   symbol: string;

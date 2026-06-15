@@ -12,12 +12,17 @@ import random
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
+from uuid import uuid4
 
 import httpx
 import websockets
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from learning.db import init_db, log_signal, log_outcome, get_learning_status
+from learning.loader import get_multiplier, get_report
+from learning.scheduler import learning_scheduler
 
 # ── Credentials ────────────────────────────────────────────────────────────────
 try:
@@ -63,6 +68,17 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def _startup():
+    await init_db()
+    asyncio.create_task(learning_scheduler())
+    # Launch always-on background engine for every asset — logs signals+outcomes 24/7
+    for _sym in ASSET_REGISTRY:
+        asyncio.create_task(_background_poll_loop(_sym))
+    print(f"[startup] learning DB ready · background engines started for "
+          f"{list(ASSET_REGISTRY.keys())}", flush=True)
 
 
 # ── Telegram alerts ───────────────────────────────────────────────────────────
@@ -290,6 +306,8 @@ class FeatureEngine:
         self.cvd: float = 0.0
         self.ofi: float = 0.0
         self.atr: float = config.volatility
+        self._bar_cvd_start: float = 0.0  # CVD at last bar open — bounds OFI per-bar
+        self._bar_vol: float = 0.0         # volume accumulated this bar
 
     def update(self, close: float, volume: float, direction: int,
                high: Optional[float] = None, low: Optional[float] = None):
@@ -303,7 +321,10 @@ class FeatureEngine:
         self.vol_history.append(volume)
 
         self.cvd += volume * direction
-        self.ofi = (self.cvd - sum(self.vol_history[-20:])) / max(sum(self.vol_history[-20:]), 1)
+        # Per-bar OFI: CVD delta since bar open divided by bar volume — bounded ~[-1, +1].
+        # Replaces the unbounded cumulative formula that accumulates to 500K+ on OANDA fake volume.
+        self._bar_vol += volume
+        self.ofi = (self.cvd - self._bar_cvd_start) / max(self._bar_vol, 1)
 
         # True ATR (EMA-14 of true range)
         tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
@@ -456,13 +477,42 @@ class FeatureEngine:
         if e9 and e21:
             separation = abs(e9 - e21) / max(abs(e21), 1) * 100
             base = min(88, 55 + separation * 500)
-        base += min(10, zscore * 4)
-        # Reduce confidence in ranging/volatile markets
+        # z_score: mild boost below 1.5σ, penalize extreme bars — high z_score = low predictability
+        if zscore < 1.5:
+            base += min(8, zscore * 3)
+        else:
+            base -= min(20, (zscore - 1.5) * 6)
+        # EMA triple alignment: full stack (9>21>50 bull or 9<21<50 bear) adds conviction
+        e50 = self.ema50()
+        if e9 and e21 and e50:
+            if (e9 > e21 > e50) or (e9 < e21 < e50):
+                base += 8
+            elif (e9 > e21) != (e21 > e50):  # mixed — trend not clean
+                base -= 8
         if regime_label == "RANGING":
             base *= 0.85
         elif regime_label == "HIGH VOLATILITY":
             base *= 0.90
+        # Apply learning multiplier when recommendations are available
+        multiplier = get_multiplier(self.config.symbol, regime_label)
+        base *= multiplier
         return int(min(88, max(45, base)))
+
+    def raw_snapshot(self) -> dict:
+        """Capture current feature values for learning persistence."""
+        current_price = self.close_history[-1] if self.close_history else self.config.base_price
+        ms = self.get_swing_structure()
+        return {
+            "atr":       round(self.atr, 6),
+            "ema9":      self.ema9(),
+            "ema21":     self.ema21(),
+            "ema50":     self.ema50(),
+            "cvd":       self.cvd,
+            "ofi":       round(self.ofi, 6),
+            "z_score":   round(self.z_score_volatility(), 4),
+            "fvg_mid":   self.get_open_fvg(current_price),
+            "liq_level": self.get_nearest_liquidity(current_price, ms["bias"]),
+        }
 
     def compute_intel(self, symbol: str, regime: dict) -> dict:
         cvd_val  = self.cvd
@@ -547,21 +597,23 @@ class PredictionTracker:
     _MAX_WALL_SECS = 8 * 3600  # 8h ceiling
 
     def __init__(self, symbol: str, bar_seconds: int = 60):
-        self.symbol    = symbol
-        self.max_ticks = min(8 * bar_seconds, self._MAX_WALL_SECS)
+        self.symbol            = symbol
+        self.max_ticks         = min(8 * bar_seconds, self._MAX_WALL_SECS)
         self.pending: Optional[dict] = None
+        self.pending_signal_id: Optional[str] = None
         self.tp1_wins  = 0
         self.tp2_wins  = 0
         self.losses    = 0
 
-    def on_signal(self, signal: dict):
-        """Start tracking a new signal only when direction changes."""
+    def on_signal(self, signal: dict) -> bool:
+        """Open a new pending trade only when direction changes. Returns True if opened."""
         if self.pending and self.pending["direction"] == signal["direction"]:
-            return
+            return False
         mid = lambda zone: (zone[0] + zone[1]) / 2
         self.pending = {
             "direction": signal["direction"],
-            "entry":     mid(signal["entryZone"]),
+            # Use bar-close price as entry (accurate for real fills); fall back to zone mid
+            "entry":     signal.get("price") or mid(signal["entryZone"]),
             "tp1_mid":   mid(signal["takeProfit1"]),
             "tp2_mid":   mid(signal["takeProfit2"]),
             "sl_mid":    mid(signal["stopLoss"]),
@@ -571,6 +623,7 @@ class PredictionTracker:
             "open_time": int(time.time()),
             "ticks":     0,
         }
+        return True
 
     def on_tick(self, price: float) -> Optional[dict]:
         """Check current price against pending signal. Returns outcome dict or None."""
@@ -606,8 +659,7 @@ class PredictionTracker:
             self.tp2_wins += 1
         elif outcome == "LOSS":
             self.losses += 1
-        total = self.tp1_wins + self.losses
-        return {
+        result = {
             "symbol":      self.symbol,
             "direction":   p["direction"],
             "entry":       round(p["entry"], 6),
@@ -621,6 +673,14 @@ class PredictionTracker:
             "close_time":  int(time.time()),
             "stats":       self.get_stats(),
         }
+        if self.pending_signal_id:
+            sid = self.pending_signal_id
+            self.pending_signal_id = None
+            try:
+                asyncio.create_task(log_outcome(sid, result))
+            except RuntimeError:
+                pass
+        return result
 
     def get_stats(self) -> dict:
         total = self.tp1_wins + self.losses
@@ -658,6 +718,7 @@ class LivePredictor:
         self._confirmed_direction:   str = "LONG"
         self._confirmed_confidence:  int = 55
         self._confirmed_bar_ts:      int = 0    # timestamp of last confirmed bar
+        self.last_signal_id: Optional[str] = None
 
     def confirm_bar_close(self):
         """Lock signal direction from the just-closed bar. Call when a bar closes."""
@@ -794,18 +855,62 @@ class LivePredictor:
         confidence = self._confirmed_confidence   # bar-close confirmed only
         d          = self._decimals()
 
+        # Structural SL: anchor to swing low/high (ICT sweep wick), fall back to ATR
+        ms = self.feature_engine.get_swing_structure()
+        # Liquidity pool TP: draw on BSL/SSL first, fall back to ATR multiples
+        liq = self.feature_engine.get_nearest_liquidity(p, 1 if direction == "LONG" else -1)
+        _gold = self.config.symbol == "GOLD"
+
         if direction == "LONG":
             entry_lo = round(p - atr * 0.15, d); entry_hi = round(p + atr * 0.10, d)
-            tp1_lo   = round(p + atr * 1.0,  d); tp1_hi   = round(p + atr * 1.4,  d)
-            tp2_lo   = round(p + atr * 2.0,  d); tp2_hi   = round(p + atr * 2.6,  d)
-            sl_lo    = round(p - atr * 1.2,  d); sl_hi    = round(p - atr * 0.8,  d)
-            rr       = round((tp1_lo - entry_hi) / max(entry_lo - sl_hi, 0.0001), 2)
+            # Structural SL below most recent swing low (ICT: below sweep wick)
+            sw_low = ms.get("swing_low")
+            if sw_low and sw_low < p - atr * 0.3:
+                sl_lo = round(sw_low - atr * 0.05, d)
+                sl_hi = round(sw_low + atr * 0.05, d)
+            else:
+                sl_lo = round(p - atr * (1.5 if _gold else 1.2), d)
+                sl_hi = round(p - atr * (1.0 if _gold else 0.8), d)
+            # TP2: nearest liquidity pool (BSL = equal highs above); TP1: midpoint
+            if liq and liq > p + atr * 1.5:
+                tp2_lo = round(liq - atr * 0.1, d); tp2_hi = round(liq + atr * 0.1, d)
+                tp1_mid = (p + liq) / 2
+                tp1_lo = round(tp1_mid - atr * 0.1, d); tp1_hi = round(tp1_mid + atr * 0.1, d)
+            else:
+                tp1_lo = round(p + atr * (1.5 if _gold else 1.0), d)
+                tp1_hi = round(p + atr * (1.9 if _gold else 1.4), d)
+                tp2_lo = round(p + atr * (3.0 if _gold else 2.0), d)
+                tp2_hi = round(p + atr * (3.8 if _gold else 2.6), d)
+            rr = round((tp1_lo - entry_hi) / max(entry_lo - sl_hi, 0.0001), 2)
         else:
             entry_hi = round(p + atr * 0.15, d); entry_lo = round(p - atr * 0.10, d)
-            tp1_hi   = round(p - atr * 1.0,  d); tp1_lo   = round(p - atr * 1.4,  d)
-            tp2_hi   = round(p - atr * 2.0,  d); tp2_lo   = round(p - atr * 2.6,  d)
-            sl_hi    = round(p + atr * 1.2,  d); sl_lo    = round(p + atr * 0.8,  d)
-            rr       = round(abs(entry_lo - tp1_hi) / max(sl_lo - entry_hi, 0.0001), 2)
+            sw_high = ms.get("swing_high")
+            if sw_high and sw_high > p + atr * 0.3:
+                sl_lo = round(sw_high - atr * 0.05, d)
+                sl_hi = round(sw_high + atr * 0.05, d)
+            else:
+                sl_lo = round(p + atr * (1.0 if _gold else 0.8), d)
+                sl_hi = round(p + atr * (1.5 if _gold else 1.2), d)
+            if liq and liq < p - atr * 1.5:
+                tp2_lo = round(liq - atr * 0.1, d); tp2_hi = round(liq + atr * 0.1, d)
+                tp1_mid = (p + liq) / 2
+                tp1_lo = round(tp1_mid - atr * 0.1, d); tp1_hi = round(tp1_mid + atr * 0.1, d)
+            else:
+                tp1_hi = round(p - atr * (1.5 if _gold else 1.0), d)
+                tp1_lo = round(p - atr * (1.9 if _gold else 1.4), d)
+                tp2_hi = round(p - atr * (3.0 if _gold else 2.0), d)
+                tp2_lo = round(p - atr * (3.8 if _gold else 2.6), d)
+            rr = round(abs(entry_lo - tp1_hi) / max(sl_lo - entry_hi, 0.0001), 2)
+
+        # Kill Zone gate (ICT: off-hours gold signals are invalid — thin market, false breakouts)
+        utc_hour = datetime.now(timezone.utc).hour
+        _in_kill_zone = (7 <= utc_hour < 12) or (13 <= utc_hour < 17)
+        if _gold and not _in_kill_zone:
+            confidence = min(confidence, 40)
+
+        # Minimum R:R gate (OTE checklist: 2:1 minimum before entry)
+        if _gold and rr < 2.0:
+            confidence = min(confidence, 45)
 
         # Next bar close time
         bs       = self.bar_seconds
@@ -815,6 +920,7 @@ class LivePredictor:
         signal = {
             "direction":  direction,
             "confidence": confidence,
+            "price":       round(p, d),          # bar-close price — used as realistic entry
             "entryZone":   [entry_lo, entry_hi],
             "takeProfit1": [tp1_lo, tp1_hi],
             "takeProfit2": [tp2_lo, tp2_hi],
@@ -823,7 +929,10 @@ class LivePredictor:
             "validUntil":  f"Next candle close — {valid_dt}",
             "stats":       self.tracker.get_stats(),
         }
-        self.tracker.on_signal(signal)
+        # Wire last_signal_id into tracker only if this opens a new trade
+        opened = self.tracker.on_signal(signal)
+        if opened:
+            self.tracker.pending_signal_id = self.last_signal_id
         return signal
 
     def get_regime(self) -> dict:
@@ -925,6 +1034,15 @@ async def _stream_binance(ws: WebSocket, symbol: str, engine: LivePredictor, tf_
             # Confirm direction only on bar close (k["x"] == True)
             if k.get("x"):
                 engine.confirm_bar_close()
+                _sid = str(uuid4())
+                engine.last_signal_id = _sid
+                asyncio.create_task(log_signal(
+                    _sid, engine.config.symbol,
+                    SECS_TO_TF.get(tf_cfg["secs"], "1h"),
+                    engine._confirmed_bar_ts,
+                    engine._confirmed_direction, engine._confirmed_confidence,
+                    engine.feature_engine.raw_snapshot(),
+                ))
 
             candle = {
                 "time":   engine.current_timestamp,
@@ -1044,6 +1162,18 @@ async def _stream_oanda(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
                 if now_bar > engine.current_timestamp:
                     # Previous bar just closed — confirm direction before advancing
                     engine.confirm_bar_close()
+                    _sid = str(uuid4())
+                    engine.last_signal_id = _sid
+                    asyncio.create_task(log_signal(
+                        _sid, engine.config.symbol,
+                        SECS_TO_TF.get(tf_cfg["secs"], "1h"),
+                        engine._confirmed_bar_ts,
+                        engine._confirmed_direction, engine._confirmed_confidence,
+                        engine.feature_engine.raw_snapshot(),
+                    ))
+                    # Reset per-bar OFI state so it's bounded each candle
+                    engine.feature_engine._bar_cvd_start = engine.feature_engine.cvd
+                    engine.feature_engine._bar_vol = 0.0
                     engine.current_timestamp = now_bar
                     active_open = mid
                     active_high = mid
@@ -1173,6 +1303,15 @@ async def _stream_yahoo(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
         now_bar = _bar_start(time.time(), bar_secs)
         if now_bar > engine.current_timestamp:
             engine.confirm_bar_close()
+            _sid = str(uuid4())
+            engine.last_signal_id = _sid
+            asyncio.create_task(log_signal(
+                _sid, engine.config.symbol,
+                SECS_TO_TF.get(tf_cfg["secs"], "1h"),
+                engine._confirmed_bar_ts,
+                engine._confirmed_direction, engine._confirmed_confidence,
+                engine.feature_engine.raw_snapshot(),
+            ))
             engine.current_timestamp = now_bar
             active_open = price
             active_high = price
@@ -1226,6 +1365,15 @@ async def _stream_simulation(ws: WebSocket, symbol: str, engine: LivePredictor, 
         now_bar = _bar_start(time.time(), bar_secs)
         if now_bar > engine.current_timestamp:
             engine.confirm_bar_close()
+            _sid = str(uuid4())
+            engine.last_signal_id = _sid
+            asyncio.create_task(log_signal(
+                _sid, engine.config.symbol,
+                SECS_TO_TF.get(tf_cfg["secs"], "1h"),
+                engine._confirmed_bar_ts,
+                engine._confirmed_direction, engine._confirmed_confidence,
+                engine.feature_engine.raw_snapshot(),
+            ))
             engine.current_timestamp = now_bar
             active_open = engine.current_price
             active_high = engine.current_price
@@ -1248,6 +1396,131 @@ async def _stream_simulation(ws: WebSocket, symbol: str, engine: LivePredictor, 
             await ws.send_json({"type": "REGIME",  "regime": engine.get_regime()})
             await ws.send_json({"type": "INTEL",   "intel":  engine.get_intel()})
         await asyncio.sleep(1.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BACKGROUND ENGINE — headless LivePredictor per asset, runs 24/7 regardless of
+# browser connections.  Logs every bar-close signal + all TP/SL outcomes to DB.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_BG_ENGINES: Dict[str, LivePredictor] = {}   # symbol → always-on engine
+
+
+async def _fetch_for_symbol(symbol: str, tf_cfg: dict, count: int = 120) -> List[dict]:
+    """Unified REST fetch for any asset, returns OHLCV list."""
+    if symbol in BINANCE_SYMBOLS:
+        return await _fetch_binance_klines(symbol, tf_cfg["binance"], count)
+    elif symbol in OANDA_SYMBOLS:
+        return await _fetch_oanda_candles(OANDA_INSTRUMENT[symbol], tf_cfg["oanda"], count)
+    elif symbol in YAHOO_SYMBOLS:
+        bars = await _fetch_yahoo_candles(YAHOO_TICKER[symbol], tf_cfg["yahoo_iv"], tf_cfg["yahoo_rng"])
+        return bars[-count:]
+    return []
+
+
+async def _background_poll_loop(symbol: str) -> None:
+    """
+    Headless background task for one asset at 1H resolution.
+    - Polls REST every 60 s to detect new closed bars and current price.
+    - Calls confirm_bar_close() + log_signal() at each bar close.
+    - Calls tracker.on_tick() each poll → PredictionTracker auto-logs outcomes to DB.
+    - Sends Telegram alerts on signal and outcome changes.
+    """
+    tf_cfg   = TF_MAP["1h"]
+    bar_secs = tf_cfg["secs"]
+    cfg      = ASSET_REGISTRY[symbol]
+    engine   = LivePredictor(cfg, bar_seconds=bar_secs)
+    _BG_ENGINES[symbol] = engine
+
+    # ── Initial seed ──────────────────────────────────────────────────────────
+    seeded = False
+    for attempt in range(5):
+        try:
+            history = await _fetch_for_symbol(symbol, tf_cfg, count=120)
+            if history:
+                _seed_engine(engine, history)
+                seeded = True
+                print(f"[bg:{symbol}] seeded {len(history)} bars", flush=True)
+                break
+        except Exception as e:
+            print(f"[bg:{symbol}] seed attempt {attempt+1} failed: {e}", flush=True)
+            await asyncio.sleep(15)
+
+    if not seeded:
+        print(f"[bg:{symbol}] could not seed — will retry on next poll", flush=True)
+
+    # Emit initial signal after seeding — only log to DB if tracker opens a new pending
+    if seeded:
+        sid = str(uuid4())
+        engine.last_signal_id = sid
+        sig = engine.get_ai_signal()   # on_signal() decides if pending opens
+        if engine.tracker.pending_signal_id == sid:   # only if on_signal opened it
+            asyncio.create_task(log_signal(
+                sid, symbol, "1h", engine._confirmed_bar_ts,
+                engine._confirmed_direction, engine._confirmed_confidence,
+                engine.feature_engine.raw_snapshot(),
+            ))
+        asyncio.create_task(_alert_signal(sig, symbol, "1h", bar_secs))
+
+    last_bar_ts = engine.current_timestamp
+
+    # ── Main poll loop ────────────────────────────────────────────────────────
+    while True:
+        await asyncio.sleep(60)
+        try:
+            bars = await _fetch_for_symbol(symbol, tf_cfg, count=5)
+            if not bars:
+                continue
+
+            now_bar = _bar_start(time.time(), bar_secs)
+
+            # Process any newly closed bars (may be >1 if we were down)
+            for bar in bars:
+                if bar["time"] > last_bar_ts and bar["time"] < now_bar:
+                    d = 1 if bar["close"] >= bar["open"] else -1
+                    engine.feature_engine.update(
+                        bar["close"], bar.get("volume", 10_000.0), d,
+                        high=bar.get("high"), low=bar.get("low"),
+                    )
+                    engine.regime_detector.update(bar["close"], bar["high"] - bar["low"])
+                    engine.current_price     = bar["close"]
+                    engine.current_timestamp = bar["time"]
+                    engine.confirm_bar_close()
+
+                    # Reset per-bar OFI for OANDA
+                    if symbol in OANDA_SYMBOLS:
+                        engine.feature_engine._bar_cvd_start = engine.feature_engine.cvd
+                        engine.feature_engine._bar_vol = 0.0
+
+                    sid = str(uuid4())
+                    engine.last_signal_id = sid
+                    sig = engine.get_ai_signal()   # on_signal() decides if new trade opens
+                    # Only log to DB when direction flips and a new trade is now pending
+                    if engine.tracker.pending_signal_id == sid:
+                        asyncio.create_task(log_signal(
+                            sid, symbol, "1h", bar["time"],
+                            engine._confirmed_direction, engine._confirmed_confidence,
+                            engine.feature_engine.raw_snapshot(),
+                        ))
+                    asyncio.create_task(_alert_signal(sig, symbol, "1h", bar_secs))
+                    last_bar_ts = bar["time"]
+                    print(f"[bg:{symbol}] bar closed → {engine._confirmed_direction} "
+                          f"conf={engine._confirmed_confidence}%", flush=True)
+
+            # Intra-bar price update (outcome tracking needs current price)
+            current_price = bars[-1]["close"]
+            engine.current_price = current_price
+
+            # Outcome check — PredictionTracker.on_tick() handles log_outcome() internally
+            outcome = engine.tracker.on_tick(current_price)
+            if outcome:
+                asyncio.create_task(_alert_outcome(outcome))
+                print(f"[bg:{symbol}] outcome={outcome['outcome']} "
+                      f"WR={outcome['stats']['win_rate']}%", flush=True)
+
+        except Exception as e:
+            print(f"[bg:{symbol}] poll error: {e}", flush=True)
+            await asyncio.sleep(30)
 
 
 # ── HTTP endpoints ─────────────────────────────────────────────────────────────
@@ -1297,11 +1570,118 @@ async def scan_market():
     return {"symbols": list(results), "ts": int(time.time())}
 
 
+@app.get("/api/stats")
+async def get_prediction_stats():
+    """Aggregate win-rate stats from DB — overall and per symbol. Single source of truth."""
+    from learning.db import DB_PATH
+    import aiosqlite as _aio
+    try:
+        async with _aio.connect(DB_PATH) as db:
+            db.row_factory = _aio.Row
+            # One outcome per signal (first by rowid) — eliminates WS reconnect duplicates
+            cur = await db.execute("""
+                SELECT s.symbol, o.outcome
+                FROM outcomes o
+                JOIN signals s ON o.signal_id = s.id
+                WHERE o.outcome != 'EXPIRED'
+                  AND o.id = (SELECT MIN(id) FROM outcomes o2 WHERE o2.signal_id = o.signal_id)
+            """)
+            rows = await cur.fetchall()
+
+        by_symbol: dict = {}
+        overall = {"tp1_wins": 0, "tp2_wins": 0, "losses": 0, "total": 0}
+
+        for r in rows:
+            sym = r["symbol"]
+            out = r["outcome"]
+            if sym not in by_symbol:
+                by_symbol[sym] = {"tp1_wins": 0, "tp2_wins": 0, "losses": 0, "total": 0}
+            s = by_symbol[sym]
+
+            if out == "TP2_WIN":
+                s["tp2_wins"] += 1; s["tp1_wins"] += 1; s["total"] += 1
+                overall["tp2_wins"] += 1; overall["tp1_wins"] += 1; overall["total"] += 1
+            elif out == "TP1_WIN":
+                s["tp1_wins"] += 1; s["total"] += 1
+                overall["tp1_wins"] += 1; overall["total"] += 1
+            elif out == "LOSS":
+                s["losses"] += 1; s["total"] += 1
+                overall["losses"] += 1; overall["total"] += 1
+
+        for d in [overall, *by_symbol.values()]:
+            d["win_rate"] = round(d["tp1_wins"] / d["total"] * 100, 1) if d["total"] > 0 else None
+
+        return {"overall": overall, "by_symbol": by_symbol}
+    except Exception as e:
+        return {"overall": {"tp1_wins": 0, "tp2_wins": 0, "losses": 0, "total": 0, "win_rate": None},
+                "by_symbol": {}, "error": str(e)}
+
+
+@app.get("/api/signals/{symbol}")
+async def get_signal_history(symbol: str, limit: int = Query(100, le=500)):
+    """Recent signals + resolved outcomes for one symbol, newest first."""
+    from learning.db import DB_PATH
+    import aiosqlite as _aio
+    sym = symbol.upper()
+    try:
+        async with _aio.connect(DB_PATH) as db:
+            db.row_factory = _aio.Row
+            cur = await db.execute("""
+                SELECT s.id, s.bar_ts, s.tf, s.direction, s.confidence,
+                       s.atr, s.z_score, s.cvd, s.ofi,
+                       o.outcome, o.entry_price, o.close_price, o.pips,
+                       o.created_at AS resolved_at
+                FROM signals s
+                LEFT JOIN outcomes o
+                  ON o.id = (SELECT MIN(id) FROM outcomes o2 WHERE o2.signal_id = s.id)
+                WHERE s.symbol = ?
+                ORDER BY s.bar_ts DESC
+                LIMIT ?
+            """, (sym, limit))
+            rows = await cur.fetchall()
+        return {"symbol": sym, "signals": [dict(r) for r in rows]}
+    except Exception as e:
+        return {"symbol": sym, "signals": [], "error": str(e)}
+
+
+@app.get("/api/learning/status")
+async def learning_status():
+    return await get_learning_status()
+
+
+@app.get("/api/learning/report")
+async def learning_report():
+    return get_report()
+
+
+@app.post("/api/learning/review")
+async def trigger_review():
+    from learning.analysis import run_weekly_analysis
+    result = await run_weekly_analysis()
+    return {"ok": result.get("status") == "ok", **result}
+
+
+@app.get("/api/engines")
+async def engine_status():
+    """Live snapshot of every background engine — direction, confidence, price, tracker stats."""
+    out = {}
+    for sym, eng in _BG_ENGINES.items():
+        out[sym] = {
+            "price":      round(eng.current_price, 6),
+            "direction":  eng._confirmed_direction,
+            "confidence": eng._confirmed_confidence,
+            "regime":     eng.regime_detector.detect()["label"],
+            "tracker":    eng.tracker.get_stats(),
+        }
+    return {"engines": out, "count": len(out), "ts": int(time.time())}
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "engine": "Dr. Strange v3.0.0",
             "live": sorted(BINANCE_SYMBOLS | OANDA_SYMBOLS | YAHOO_SYMBOLS),
-            "timeframes": list(VALID_TFS)}
+            "timeframes": list(VALID_TFS),
+            "bg_engines": len(_BG_ENGINES)}
 
 
 @app.get("/assets")

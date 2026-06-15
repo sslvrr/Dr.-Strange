@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { AISignal, MarketIntel, MarketRegime, OHLCV, RawIntel, ScanEntry, ScanResult } from '@/types/trading';
+import LearningPanel from './LearningPanel';
 
 // ── Shared utilities ────────────────────────────────────────────────────────
 
@@ -514,7 +515,30 @@ export default function BottomPanels({
   currentCandle?: OHLCV | null;
   selectedSymbol: string;
 }) {
+  // Track signal direction changes for VolatilityPanel without SignalHistoryPanel
   const [signalLog, setSignalLog] = useState<LogEntry[]>([]);
+  const lastDirRef  = useRef<string | null>(null);
+  const lastSymRef  = useRef<string>('');
+
+  useEffect(() => {
+    if (selectedSymbol !== lastSymRef.current) {
+      lastSymRef.current = selectedSymbol;
+      lastDirRef.current = null;
+      setSignalLog([]);
+    }
+  }, [selectedSymbol]);
+
+  useEffect(() => {
+    if (!signal || !currentCandle) return;
+    if (signal.direction !== lastDirRef.current && signal.direction !== 'NEUTRAL') {
+      lastDirRef.current = signal.direction;
+      const dir = signal.direction as 'LONG' | 'SHORT';
+      const t = new Date();
+      const ts = t.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/New_York' }) + ' ET';
+      setSignalLog(prev => [{ time: ts, direction: dir, price: currentCandle.close, confidence: signal.confidence }, ...prev].slice(0, 8));
+    }
+  }, [signal?.direction, currentCandle?.close, signal?.confidence]);
+
   const raw = intel?.raw;
   const isOanda = selectedSymbol === 'EURUSD' || selectedSymbol === 'GOLD';
 
@@ -524,12 +548,7 @@ export default function BottomPanels({
       <KeyLevelsPanel raw={raw} />
       <OrderFlowPanel raw={raw} isOanda={isOanda} />
       <SessionPanel />
-      <SignalHistoryPanel
-        signal={signal}
-        currentCandle={currentCandle}
-        selectedSymbol={selectedSymbol}
-        onLogChange={setSignalLog}
-      />
+      <LearningPanel />
       <VolatilityPanel raw={raw} signalLog={signalLog} />
     </div>
   );
