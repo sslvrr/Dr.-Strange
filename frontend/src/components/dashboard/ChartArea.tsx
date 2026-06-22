@@ -34,8 +34,10 @@ function LiveClock() {
   const [t, setT] = useState('');
   useEffect(() => {
     const tick = () => {
-      const n = new Date();
-      setT(`${String(n.getUTCHours()).padStart(2,'0')}:${String(n.getUTCMinutes()).padStart(2,'0')}:${String(n.getUTCSeconds()).padStart(2,'0')} UTC`);
+      const s = new Date().toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+      });
+      setT(`${s} ET`);
     };
     tick();
     const id = setInterval(tick, 1000);
