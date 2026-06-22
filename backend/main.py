@@ -1,6 +1,6 @@
 """
 Dr. Strange — Production FastAPI WebSocket Backend v3.0
-Live market data: Binance US (crypto) · OANDA (forex/gold) · Yahoo Finance (AAPL)
+Live market data: Binance US (crypto) · OANDA (forex/gold) · Yahoo Finance (NAS100)
 Quantile Regression + EMA/ATR Signal Engine
 Multi-timeframe: 1m · 5m · 15m · 1h · 4h · D · W
 """
@@ -11,6 +11,9 @@ import os
 import random
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+_ET = ZoneInfo("America/New_York")
 from typing import Dict, List, Optional
 from uuid import uuid4
 
@@ -43,10 +46,10 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # ── Data-source routing ────────────────────────────────────────────────────────
 BINANCE_SYMBOLS = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
 OANDA_SYMBOLS   = {"EURUSD", "GOLD"}
-YAHOO_SYMBOLS   = {"AAPL", "NAS100"}
+YAHOO_SYMBOLS   = {"NAS100"}
 
 OANDA_INSTRUMENT = {"EURUSD": "EUR_USD", "GOLD": "XAU_USD"}
-YAHOO_TICKER     = {"AAPL": "AAPL", "NAS100": "^NDX"}
+YAHOO_TICKER     = {"NAS100": "^NDX"}
 
 # ── Timeframe config ───────────────────────────────────────────────────────────
 TF_MAP: Dict[str, dict] = {
@@ -202,7 +205,6 @@ ASSET_REGISTRY: Dict[str, AssetConfig] = {
     "ETHUSDT": AssetConfig(symbol="ETHUSDT", exchange="BINANCE",  base_price=2025.0,   volatility=30.0,   tick_size=0.01),
     "SOLUSDT": AssetConfig(symbol="SOLUSDT", exchange="BINANCE",  base_price=82.50,    volatility=2.0,    tick_size=0.01),
     "EURUSD":  AssetConfig(symbol="EURUSD",  exchange="OANDA",    base_price=1.16200,  volatility=0.0008, tick_size=0.00001),
-    "AAPL":    AssetConfig(symbol="AAPL",    exchange="NASDAQ",   base_price=210.0,    volatility=1.5,    tick_size=0.01),
     "GOLD":    AssetConfig(symbol="GOLD",    exchange="OANDA",    base_price=4450.0,   volatility=12.0,   tick_size=0.1),
     "NAS100":  AssetConfig(symbol="NAS100",  exchange="NASDAQ",   base_price=18500.0,  volatility=120.0,  tick_size=0.01),
 }
@@ -723,7 +725,18 @@ class LivePredictor:
     def confirm_bar_close(self):
         """Lock signal direction from the just-closed bar. Call when a bar closes."""
         regime = self.regime_detector.detect()
-        self._confirmed_direction  = self.feature_engine.signal_direction()
+        raw_direction = self.feature_engine.signal_direction()
+        # BTCUSDT: suppress counter-trend SHORTs during a confirmed uptrend (was a
+        # 40% WR / 8-12 source of losses — EMA9/21 dips kept fighting the trend).
+        # Only gate once the regime detector has a real 20-bar read, not its
+        # warm-up default (which is itself "BULLISH TREND").
+        if (self.config.symbol == "BTCUSDT" and raw_direction == "SHORT"
+                and regime["label"] == "BULLISH TREND"
+                and len(self.regime_detector.price_history) >= 20):
+            print(f"[bg:BTCUSDT] suppressed counter-trend SHORT (regime=BULLISH TREND), "
+                  f"holding {self._confirmed_direction}", flush=True)
+            raw_direction = self._confirmed_direction
+        self._confirmed_direction  = raw_direction
         self._confirmed_confidence = self.feature_engine.signal_confidence(regime["label"])
         self._confirmed_bar_ts     = self.current_timestamp
 
@@ -903,8 +916,8 @@ class LivePredictor:
             rr = round(abs(entry_lo - tp1_hi) / max(sl_lo - entry_hi, 0.0001), 2)
 
         # Kill Zone gate (ICT: off-hours gold signals are invalid — thin market, false breakouts)
-        utc_hour = datetime.now(timezone.utc).hour
-        _in_kill_zone = (7 <= utc_hour < 12) or (13 <= utc_hour < 17)
+        et_hour = datetime.now(_ET).hour
+        _in_kill_zone = (2 <= et_hour < 7) or (8 <= et_hour < 12)
         if _gold and not _in_kill_zone:
             confidence = min(confidence, 40)
 
@@ -915,7 +928,7 @@ class LivePredictor:
         # Next bar close time
         bs       = self.bar_seconds
         next_bar = (int(time.time() // bs) + 1) * bs
-        valid_dt = datetime.fromtimestamp(next_bar, tz=timezone.utc).strftime("%d %b %Y %H:%M UTC")
+        valid_dt = datetime.fromtimestamp(next_bar, tz=timezone.utc).astimezone(_ET).strftime("%d %b %Y %H:%M ET")
 
         signal = {
             "direction":  direction,
@@ -1206,7 +1219,7 @@ async def _stream_oanda(ws: WebSocket, symbol: str, engine: LivePredictor, tf_cf
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# YAHOO FINANCE  (AAPL)
+# YAHOO FINANCE  (NAS100)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _YF_HEADERS = {

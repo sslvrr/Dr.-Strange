@@ -262,16 +262,19 @@ function OrderFlowPanel({ raw, isOanda }: { raw?: RawIntel; isOanda: boolean }) 
 }
 
 // ── Panel 4: Session Clock ───────────────────────────────────────────────────
+// Hours are ET (was hardcoded UTC, which silently drifts vs ET across DST
+// since UTC has no daylight saving — converted using the EST mapping the
+// original UTC numbers were tuned against).
 const SESSIONS = [
-  { name: 'London', color: '#2563EB', openH: 7,  openM: 0,  closeH: 16, closeM: 0  },
-  { name: 'New York', color: '#02C076', openH: 13, openM: 30, closeH: 21, closeM: 0  },
-  { name: 'Asia',   color: '#FFB800', openH: 22, openM: 0,  closeH: 7,  closeM: 0  },
+  { name: 'London', color: '#2563EB', openH: 2,  openM: 0,  closeH: 11, closeM: 0  },
+  { name: 'New York', color: '#02C076', openH: 8, openM: 30, closeH: 16, closeM: 0  },
+  { name: 'Asia',   color: '#FFB800', openH: 17, openM: 0,  closeH: 2,  closeM: 0  },
 ] as const;
 
 const KILL_ZONES = [
-  { name: 'London Open KZ', startH: 7,  startM: 0,  endH: 9,  endM: 0  },
-  { name: 'NY Open KZ',     startH: 13, startM: 30, endH: 15, endM: 0  },
-  { name: 'London Close',   startH: 15, startM: 0,  endH: 16, endM: 0  },
+  { name: 'London Open KZ', startH: 2,  startM: 0,  endH: 4,  endM: 0  },
+  { name: 'NY Open KZ',     startH: 8, startM: 30, endH: 10,  endM: 0  },
+  { name: 'London Close',   startH: 10, startM: 0,  endH: 11, endM: 0  },
 ] as const;
 
 function toMins(h: number, m: number) { return h * 60 + m; }
@@ -293,6 +296,15 @@ function fmtCountdown(mins: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+function nowMinsET(now: Date): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(now);
+  const h = Number(parts.find(p => p.type === 'hour')?.value ?? 0) % 24;
+  const m = Number(parts.find(p => p.type === 'minute')?.value ?? 0);
+  return h * 60 + m;
+}
+
 function SessionPanel() {
   const [now, setNow] = useState(new Date());
   useEffect(() => {
@@ -300,7 +312,7 @@ function SessionPanel() {
     return () => clearInterval(id);
   }, []);
 
-  const nowMins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const nowMins = nowMinsET(now);
 
   const activeKZ = KILL_ZONES.find(kz =>
     isOpen(nowMins, kz.startH, kz.startM, kz.endH, kz.endM)
